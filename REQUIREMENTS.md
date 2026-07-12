@@ -1,57 +1,111 @@
 # knowledge-desktop — Requirements
 
-**v0.1 — founding document, 2026-07-12.** This document is the measuring stick: every design,
-build, validation, and ship decision in this repo is graded against it. It states WHAT must be
-observably true and contains no design decisions — no internal software names, no ports, no
-config keys. Those belong to the design layer (CLAUDE.md, README.md, the code), which must
-TRACE to this document but never constrains it. User-facing products, specifically selected
-tools, and standard protocols are named only where they ARE the requirement.
-
-**Provenance.** The requirements are carried over verbatim in substance from the `fedora-desktop`
-REQUIREMENTS v3.2 (owner-approved 2026-07-11), re-stamped v0.1 as the founding document of this
-repo. The platform is being **rebuilt zero-base from scratch** here; the `fedora-desktop` tree is
-**reference only** — not a template, not a constraint, and not evidence that anything it did was
-right. Every file in this repo is re-derived from and re-justified against this document.
-
-**Three owner decisions carried in and still in force (2026-07-11):** (i) the VNC mirror covers
-**each** live session including workers, and the operator may observe worker sessions through it —
-a scoped carve-out to D2 (A7, D2). (ii) The admin uses **one** credential across all doors, like
-every worker — the previous admin split is retired (already required by A9/D2; recorded here to
-close the deviation). (iii) The zero-base rebuild is a build-method ruling, not a requirements
-change.
+**v1.0 — founding requirements, owner-approved and finalized 2026-07-12.** This document is the
+measuring stick: every design, build, validation, and ship decision in this repo is graded against
+it. It states WHAT must be observably true, not HOW. It prescribes no build mechanism and fixes no
+port numbers, config keys, or file paths. A proper name appears here only where the name itself is
+the requirement: an owner-elected product or tool (Obsidian, VS Code, Firefox, 1Password, Claude
+Code, Ptyxis, Mosh, tmux), a standard protocol (HTTPS, RDP, VNC, SSH), an owner-elected stack,
+desktop environment, scheme, or overlay network (XRDP, GRD, X11, Wayland, XFCE, GNOME, Diceware,
+Tailscale), or a named fleet member (Erebus, fedora-dev, Strix). No internal repository, build-tooling, secrets-store, or component name appears
+here — those are design, and design may not be smuggled in as a requirement. The design layer (the
+code and the repo's design documents) must TRACE to this document but never constrains it.
 
 ## 1. Objective
 
 Deliver the owner a **cloud knowledge desktop**: a full graphical Linux desktop running on a
 headless, GPU-less internet VPS, usable from any device, anywhere.
 
+**The access model.** The desktop is reached through three first-class access paths — a **web
+browser door**, **RDP**, and **VNC** — and **all three attach to the user's one running desktop
+session**; no path ever forks a second session. Exactly **one** of these is public: the **web
+browser door, over HTTPS on the public IP**, usable from any device in any location with zero
+client software. Every other door — RDP, VNC, and SSH terminal access — is reachable **only over
+the owner's private Tailscale tailnet**, never from the public internet. The desktop **follows the
+user across devices**: its display geometry tracks the most recently active screen, so the desktop
+is fully usable wherever the user last looked, clicked, or moved the pointer.
+
+**Fleet terminals through the web door (first-class, not an extra).** The web door also gives each
+user, by explicit per-user grant, **SSH terminal tiles to endpoints elsewhere on the fleet — hosts
+and containers alike (§2)** — over the tailnet. This is how a user reaches the rest of the fleet
+from a phone, a tablet, or a borrowed laptop with nothing installed. Grants are per-user,
+exact-match and fail-closed; revocation actually revokes; an ungranted user sees nothing. The
+endpoint set is **data, not design**: adding an endpoint must never require a change to this
+document.
+
 Two jobs, one desktop:
 1. **Knowledge work (primary)** — operate and maintain the owner's second brain (the Obsidian
    vault + LLM wiki), with resident Claude agents as live-in librarians working under direction.
 2. **Toolset development (secondary)** — the desktop's users, through their resident agents,
-   develop **knowledge-management toolsets that run inside the desktop container** (e.g., the
-   VoiceID repository under the oso-gato account). The desktop platform itself is maintained
-   upstream by the fleet's dev apparatus, not by this box.
+   develop **knowledge-management toolsets that run inside the desktop container**. Whether any
+   specific toolset exists is not a requirement of this document. The desktop platform itself is
+   maintained upstream by the fleet's dev apparatus (§2), not by this box.
 
-It must be **safe to leave exposed to the public internet indefinitely** (one hardened door, all
-else private), **trustworthy with the owner's data** (the vault can never be silently destroyed;
-collaborators can't read each other), and **self-maintaining** (patches itself, heals itself, a
-failed upgrade rolls back).
+It must be **safe to leave exposed to the public internet indefinitely** — exactly one hardened
+public door (the web door), with every other door reachable only over the Tailscale tailnet —
+**trustworthy with the owner's data** (the vault can never be silently destroyed; collaborators
+can't read each other), and **self-maintaining** (patches itself, heals itself, a failed upgrade
+rolls back).
 
-**Mandate:** the repo ships **two independent implementations ("lineages") of these same
-requirements**. Both must ship: each lineage individually satisfies every requirement below —
-§5 records that no lineage deltas are approved.
+**Mandate — two lineages.** A **lineage** is a complete, independently shippable implementation of
+this entire document: its own image, its own build, its own validation, deployable on its own. This
+repo ships **two**, differing in exactly one thing — the remote-desktop stack each is built on, and
+the desktop environment elected with it:
+
+- **LINEAGE 1 — XRDP, serving an X11 desktop session, with XFCE as the desktop environment.**
+- **LINEAGE 2 — GRD (GNOME Remote Desktop), serving a Wayland desktop session, with GNOME as the
+  desktop environment.**
+
+Both lineages ship. Each satisfies **every requirement in §3 in full, on its own** — every door,
+every FR, no exemptions. **The lineages are functionally equivalent:** the same three doors, the
+same one-session invariant, the same toolset (B2), the same geometry behaviour (C4), the same
+isolation, the same fleet tiles — every requirement in this document holds identically on both.
+The **sole owner-elected, user-visible difference is the desktop environment itself** (XFCE vs
+GNOME); any *other* user-visible difference between the two lineages is a defect. Each lineage is
+graded independently against the §6 bar; §5 records that no lineage deltas are approved.
 
 ## 2. Actors & environment
 
-- **Owner/admin** — full desktop, dev tooling, their own resident agent.
-- **Workers (dynamic set, provisioned at deploy)** — invited collaborators: desktop + vault work,
-  each with their own resident agent. Cooperating, not mutually hostile (one shared kernel is an
-  accepted, disclosed ceiling).
-- **Resident agents (one per user)** — maintain wiki/vault under direction; develop
-  knowledge-management toolsets; contribute via pull requests under their own identity.
-- **Environment** — headless Linux VPS, no GPU, public internet; a private overlay network
-  ("tailnet") connects the owner's devices and the fleet's hosts.
+**Actors**
+
+- **Owner/admin** — full desktop, full toolset, their own resident agent. The owner is also the
+  **operator**: the party who deploys and runs the product. **There is no separate operator role,
+  and no party — the owner/admin/operator included — has any standing at runtime to enter,
+  observe, or read another user's session, home, or data.**
+- **Workers (a dynamic set, defined at deploy)** — invited collaborators: desktop + vault work,
+  each with their own resident agent. They are cooperating, not mutually hostile: all users share
+  one operating-system kernel, so isolation between users is enforced by the operating system
+  rather than by separate machines. This ceiling is accepted and honestly disclosed (E6).
+- **Resident agents (one per user)** — maintain the wiki/vault under direction; build
+  knowledge-management toolsets; contribute changes as pull requests under their own identity.
+
+**Deployment context** (load-bearing — several requirements refer to it)
+
+- **Erebus** is the internet **VPS host**: headless, no GPU, no monitor, no login seat, holding
+  the public IP address.
+- **This product — the knowledge desktop — is a CONTAINER that runs on Erebus.**
+- **fedora-dev** is another container running on Erebus, a **sibling** of this product: the
+  fleet's development environment, where the desktop **platform** is maintained (H2). It is not
+  part of this product, and this product neither builds nor operates it.
+- The **fleet** is the owner's set of cooperating machines and containers — hosts such as Erebus,
+  containers such as fedora-dev and this desktop. The fleet **grows**: further endpoints (e.g. a
+  host named **Strix**) join later.
+
+**The private network is a Tailscale tailnet**
+
+- Every member is a tailnet node: the owner's phones, tablets and laptops; the fleet's **hosts**
+  (Erebus, later Strix); and the fleet's **containers** (fedora-dev, and this desktop).
+- The tailnet is this product's **private surface**. **RDP, VNC and SSH are reachable from the
+  tailnet and from nowhere else** — never from the public internet, by construction.
+- **Tailnet membership is sufficient authentication for the private doors:** no second factor is
+  required on RDP, VNC or SSH. It is **not** an identity, however — establishing *which* user is
+  connecting still requires a per-user credential on those doors (A12).
+- Erebus's **public IP** carries exactly one thing: this product's web door over HTTPS (A2).
+  Nothing else of this product is ever published to it.
+- **Fleet endpoints the web door must reach** (per-user grant, A10): **hosts and containers**.
+  Initially required: **Erebus** (the host) and **fedora-dev** (the container); **Strix** and
+  others follow. The endpoint set is **data, not design** — adding an endpoint requires no change
+  to this document and no code change.
 
 ## 3. Functional requirements
 
@@ -60,15 +114,18 @@ requirements**. Both must ship: each lineage individually satisfies every requir
 | FR | Requirement |
 |---|---|
 | A1 | The full desktop is usable from a **standard web browser over HTTPS, from anywhere, with zero client software** (including iOS/iPadOS). |
-| A2 | **Exactly one network endpoint is public** (the browser door, on one operator-chosen port). Every other access path is reachable **only over the private network** — by construction, not by convention. |
-| A3 | The public door requires a **strong per-user credential PLUS a second factor** that works with standard authenticator apps (self-service enrollment at first login). |
+| A2 | **Exactly one network endpoint is public: the browser door (A1)**, reachable over HTTPS from the public internet. Every other access path — **RDP (A6), VNC (A7), SSH terminal (A8)** — is reachable **only over the Tailscale tailnet**, never from the public internet. This holds **by construction, not by convention**. |
+| A3 | The public door requires, **for every user without exception — the admin and every worker alike — a strong per-user credential PLUS a second factor** that works with standard authenticator apps, with **self-service enrollment at first login**. No user, role, or configuration setting exempts anyone from the second factor on the public door. |
 | A4 | The public door **locks out brute force automatically** (repeated failed logins ⇒ temporary source ban). |
 | A5 | The public door is **encrypted in transit**; no credential ever crosses the network in the clear. |
-| A6 | The desktop is also reachable **natively via standard RDP** from the private network (interoperable with stock Windows/macOS/FreeRDP clients). |
-| A7 | **Each** live session (the admin's and every worker's) can optionally be mirrored **via standard VNC** from the private network, armed by an operator-supplied credential at deploy; not armed ⇒ no listener. The operator may observe worker sessions through this mirror (see the D2 carve-out). **Applies to both lineages in full** — verification timelines differ only because one lineage must first build it. |
-| A8 | **Terminal access** from the private network: key-only SSH plus a roaming-resilient shell; every terminal login lands in one shared multiplexer session that follows the most recently active device and degrades cleanly across screen sizes. |
+| A6 | The desktop is also reachable **natively via standard RDP from the Tailscale tailnet** (interoperable with stock Windows/macOS/FreeRDP clients), never from the public internet. Tailnet membership is sufficient authentication (no second factor); the door still establishes **which** user is connecting (A12) and attaches only to that user's own running session (A11, A9). |
+| A7 | The desktop is reachable natively via **standard VNC** (interoperable with stock VNC clients) — **over the Tailscale tailnet only**, never from the public internet. VNC is a **first-class user access path to the user's own desktop**: it attaches to that user's single running session (A11), never forking a second session. It is **not a mirror and not a supervisory channel** — no operator, admin, or other user may observe any user's session through it. The door establishes **which** user is connecting (A12, using the A13-derived credential) and attaches only to that user's own session. Tailnet membership is sufficient authentication — no second factor. Required on both lineages. |
+| A8 | **SSH terminal access over the Tailscale tailnet only** — never from the public internet: key-only **SSH**, plus **Mosh** for roaming resilience (survives changes of network address and device sleep). Tailnet membership is sufficient authentication (no second factor); the door still establishes **which** user is connecting (A12). Every terminal login by a user lands in **that user's own persistent tmux session** — one per user, shared across that user's own devices and **never** between users (A9, D2, D3) — which **follows the most recently active device** and remains legible at every screen size it is viewed from. |
 | A9 | **One login, one desktop (SSO):** authenticating at any door lands the user on **their own** session without re-authenticating to a second layer; no user can reach another user's session. |
-| A10 | The browser door can host **per-user-granted terminal tiles to other fleet hosts** (over the private network). Grants are per-user, exact-match, fail-closed, and **revocation actually revokes**. An ungranted user sees nothing. |
+| A10 | The browser door hosts **per-user-granted SSH terminal tiles to fleet endpoints — hosts and containers alike (§2)** — over the tailnet, including at minimum **Erebus** (the host) and the **fedora-dev** container. Grants are per-user, exact-match, fail-closed, and **revocation actually revokes**; an ungranted user sees nothing. The granted endpoint set is **dynamic** — adding an endpoint is a grant change, never a requirements change. |
+| A11 | **Same-session invariant.** Three first-class desktop access paths — web (A1), RDP (A6) and VNC (A7) — **all attach to the SAME running session.** For a given user there is exactly **one** desktop session. Every path that user opens — in any combination, concurrently or in sequence, from any device — attaches to that one session, showing the same running applications and the same live screen. **No access path may create, fork, or serve a second session for that user**, and closing or losing one path never ends the session (C1). |
+| A12 | **Every door resolves the user before it serves anything.** On every access path — public and private alike — the connection is resolved to exactly **one** defined user before any pixels, shell, or session are served, and it attaches only to **that** user's own session and home (A9, D2). A connection that cannot be resolved to exactly one defined user is **refused (fail-closed)**. On the private doors (RDP, VNC, SSH), **tailnet membership is sufficient authentication — no second factor is required** (the A3 second factor is a public-door property only); tailnet membership discharges the second factor, it does **not** identify the user and never substitutes for the per-user identity each private door must still establish (RDP/VNC by the user's own per-user credential, SSH by the user's own key per A8). **No tailnet member may reach a session or home that is not their own** (D2, D3). |
+| A13 | **Credential format (owner-elected).** Each user's password is a **Diceware-style phrase of the fixed shape `xxx-xxxx-xxxx`** — a 3-character word, a 4-character word, and a 4-character word, dash-separated (13 characters). It is the **one credential** that user presents at every door (with the A3 second factor added on the public door only). Where a door's protocol cannot carry the full credential — **VNC accepts at most 8 password characters** — that door takes **exactly the first 8 characters of the same credential (`xxx-xxxx`)**: a truncation rule, not a second credential — nothing separate to issue, rotate, or forget. The security consequence of the truncation is disclosed in E6. |
 
 ### B. Desktop & workloads
 
@@ -83,15 +140,16 @@ requirements**. Both must ship: each lineage individually satisfies every requir
 | FR | Requirement |
 |---|---|
 | C1 | A session **survives disconnect indefinitely** — apps keep running unattended. |
-| C2 | **Cross-device resume:** disconnect on device A, reconnect on device B (different network address, different screen) ⇒ the **same session**, apps intact, display adapted. No path may silently fork a second session. |
+| C2 | **Cross-device resume:** disconnect on device A, reconnect on device B (different network address, different screen size, different access path) ⇒ the **same** session, every application still running and in the same state, and the desktop sized to device B per **C4**. |
 | C3 | Sessions come up **without any server-side manual action** — a freshly booted box serves every access path unaided. |
+| C4 | **Last display wins — desktop geometry.** A desktop session's geometry is always set by its **governing display**: the most recently active of the displays currently attached to that session (the last display to view, click, move the pointer, type on, or change its viewport). Observably, the desktop's drawing area matches the governing display's viewport — the whole desktop is visible, fills that viewport, and is **not** letterboxed, cropped, panned, scrollable, or left at any other display's size. When a different attached display becomes the most recently active, the desktop follows and scales to it **within 5 seconds**, without restarting the session and without disturbing any running application. When the governing display detaches, the next-most-recently-active still-attached display governs; when the last display detaches the session keeps running (C1) and adopts the geometry of the next display that attaches. This holds on **every desktop access path — web, RDP and VNC, including when two or more are attached to the one session at once — and identically on both lineages (X11 and Wayland).** Stated as an observable outcome, not a mechanism. |
 
 ### D. Multi-user
 
 | FR | Requirement |
 |---|---|
-| D1 | One always-present admin plus a **dynamic set of workers defined solely by the secret file** (§G): define N users ⇒ N are provisioned, with no code or configuration change. **Zero workers ⇒ behavior identical to a single-user box.** |
-| D2 | Per user: own credentials (one credential per user across doors, plus their own second factor), **own desktop session, own persistent home** — private from every other user, including workers vs the admin's data. **Sole carve-out:** the operator/admin may observe a worker's **live session** through the armed VNC mirror (A7) — an intentional supervisory exception limited to live-session observation, disclosed per E6. It grants no access to any user's persistent home or data at rest, and no worker any reach into another user's session, home, or data. |
+| D1 | One always-present admin plus a **dynamic set of workers defined solely by the per-user roster the operator supplies at deploy** (§G): define N users ⇒ N are provisioned, with no code or configuration change. **Zero workers ⇒ behaviour identical to a single-user box.** |
+| D2 | Per user: **their own credential** (one per user, used to establish that user's identity at every door, per A13), **their own second factor** (public door only), **their own desktop session**, and **their own persistent home** — private from every other user, including workers vs the admin's data. **Per-user privacy is absolute:** no user — the operator/admin included — may observe, attach to, record, or otherwise reach another user's live session, persistent home, or data at rest, by any door or any mechanism. **There is no supervisory exception.** |
 | D3 | **Workers hold no platform power by construction**: no admin escalation, no host or platform administration, no reach into any other user's home, session, or agent environment — enforced by mechanism, not policy prose. |
 | D4 | Optional **shared folder**: full read-write collaboration for all desktop users regardless of their file-creation defaults, without weakening private homes. |
 | D5 | Removing a user **disables** their web identity (preserving second-factor enrollment for reinstatement); a grant downgrade takes effect at next boot. |
@@ -106,34 +164,34 @@ requirements**. Both must ship: each lineage individually satisfies every requir
 | E3 | **All user data persists** across container recreation and image upgrades. |
 | E4 | **Vault safety:** automated vault sync is non-destructive (append-only history, no forced overwrites, conflicts stop safely for a human) and general cloud sync is **mechanically unable** to touch the vault; bulk-delete accidents are bounded and recoverable. |
 | E5 | **Untrusted-content processing** (feeding web content to the wiki) runs with no credentials, no vault access, and no network — a leak-proof one-shot sandbox. |
-| E6 | The security posture is **honestly disclosed**: any accepted residual risk (shared kernel, in-box-readable vault, weak-auth mirror on the private net) is documented, never papered over with theater. |
+| E6 | The security posture is **honestly disclosed**: every accepted residual risk is documented and never papered over with theater — including the **shared kernel** across cooperating users; the **vault being readable in-box** by the account that owns it; the fact that the **private doors (RDP, VNC, SSH) accept tailnet membership in place of a second factor** (per-user identity is still required on each private door per A12, so a compromised tailnet device holding a user's credential reaches those doors as that user, bounded to that user's own session and never another's); and the fact that the **VNC credential is a truncation of the master credential (A13)** — its 8 characters ARE the master's first 8, so compromising the VNC password partially exposes the master credential; accepted because VNC is reachable only from the tailnet, where membership is the primary boundary and the password is secondary. |
 
 ### F. Operations
 
 | FR | Requirement |
 |---|---|
-| F1 | **Deploy is zero-intervention** end-to-end: the host's setup reads all configuration from the secrets source (§G4) and brings up the full product — containers, users, agent environments — with no prompts and no manual steps. An interactive wizard remains available for by-hand spin-ups. The non-interactive contract is versioned in-repo and is the only sanctioned way to run the image. |
+| F1 | **Deploy is zero-intervention** end-to-end: the host's setup reads all configuration from the single secrets source (§G) and brings up the full product — containers, users, agent environments — with no prompts and no manual steps. An **attended, by-hand spin-up path also remains available**; the **non-interactive deploy contract is the only sanctioned way to run the image.** |
 | F2 | **Truthful health:** a dead desktop is never reported healthy; a slow first boot is never falsely unhealthy; death of any core service self-heals by restart. |
 | F3 | **Self-maintaining:** the image is rebuilt on a fixed cadence with current patches; every agent environment updates daily; the host can pull-refresh the running box with **automatic rollback** on health failure. |
 | F4 | Both lineages are **co-deployable on one host** without collisions. |
 
-### G. User agent environments (claudebox)
+### G. Per-user resident-agent environments
 
 | FR | Requirement |
 |---|---|
-| G1 | **Every desktop user — the admin and every worker — has their own running claudebox**: an isolated resident-agent environment, one per user. |
-| G2 | Each claudebox is bound to its **own dedicated GitHub App**; its credentials are **pre-authorized**, so no interactive authentication is ever needed at spin-up. |
-| G3 | The environment count is **dynamic, driven entirely by the users defined in the secret file** (admin, user1, user2, …): two defined ⇒ two spin up; four defined ⇒ four spin up. No code or configuration change. |
-| G4 | **Spinning up these environments on the host is completely zero-intervention**: the host's setup script reads the configuration directly from the **secret file in the ak-private repository** and creates every environment automatically. |
-| G5 | That secret file stores **all per-user credentials**: (a) pre-authorized GitHub App credentials, (b) Tailscale tailnet-enrollment details, (c) per-user passwords, (d) usernames — entering the box only at deploy time, per E1. |
+| G1 | **Every desktop user — the admin and every worker — has their own running, isolated resident-agent environment**: exactly one per user. |
+| G2 | Each environment acts under its **own distinct, pre-authorized identity** to the version-control host, so it contributes **attributably** and needs **no interactive authentication at spin-up**. |
+| G3 | The environment count is **dynamic, driven entirely by the users defined in the single secrets source**: N users defined ⇒ N environments provisioned, with no code or configuration change. |
+| G4 | **Provisioning these environments on the host is completely zero-intervention**: the host's setup reads every user definition from the **single operator-controlled secrets source** and creates each environment automatically — no prompts, no manual steps. |
+| G5 | The single secrets source supplies **all per-user provisioning material** — the pre-authorized version-control identity, the tailnet-enrollment details, the per-user password (A13), and the username — entering the box **only at deploy time** (per E1). |
 
 ### H. Development scope & platform governance
 
 | FR | Requirement |
 |---|---|
-| H1 | The in-desktop development function exists to build and maintain **toolsets that run inside the desktop container in support of knowledge-management work** — e.g., the **VoiceID** repository under the oso-gato account. |
+| H1 | The in-desktop development function exists to build and maintain **toolsets that run inside the desktop container in support of knowledge-management work**. Whether any specific toolset exists is not a requirement of this document. |
 | H2 | It does **NOT** develop the knowledge-desktop platform repository and does **NOT** build or operate other container environments. Platform development belongs to the fleet's dev apparatus. |
-| H3 | Toolset changes land via **pull requests under the acting user's own GitHub App identity** — attributable and least-privilege. |
+| H3 | Toolset changes land as **attributable, least-privilege contributions to the version-control host under the acting user's own distinct, pre-authorized identity** — reviewed before they take effect (no direct writes). |
 | H4 | The desktop **platform** itself ships through the fleet pipeline: PR-only by mechanism; every change **empirically validated pre-merge** (a disposable candidate is built and actually run, its access paths functionally exercised, on infrastructure that can truly boot it); merged autonomously via **two independent machine gates**; failed validations are **self-diagnosing**. |
 
 ## 4. Constraints (bind every design; still not the design)
@@ -149,9 +207,11 @@ requirements**. Both must ship: each lineage individually satisfies every requir
 
 ## 5. Approved lineage deltas
 
-**None.** Both lineages must satisfy §3 in full — including A7 (VNC). Where a lineage has not yet
-built a required capability, that is unmet development work (§7), never a requirements delta; the
-only permitted difference between lineages is how quickly each can be verified.
+**None.** Both lineages must satisfy §3 in full; no per-lineage exception is approved and this
+document grants none. The only permitted differences between the two lineages are internal
+mechanism and the **owner-elected desktop environment** (§1: XFCE on lineage 1, GNOME on
+lineage 2) — every requirement, every door, and every behaviour in this document holds
+identically on both, on every access path (A11).
 
 ## 6. Acceptance bar — "shipped" means
 
@@ -159,38 +219,29 @@ For **each lineage independently**:
 
 1. **Build green** from a clean tree (CI).
 2. **Automated pre-merge gate GREEN**: a disposable candidate **boots headless and every required
-   access path is functionally exercised** — browser door serves AND a real authentication
+   access path is functionally exercised** — the browser door serves AND a real authentication
    round-trip proves the credential+second-factor chain live (valid credentials draw a
-   second-factor challenge; invalid are rejected); RDP answers a real protocol handshake; VNC
-   (both lineages, A7) answers its protocol handshake when armed and is absent when not; the
-   desktop session is actually rendering; multi-user provisioning + isolation hold; health is
-   truthful. A RED verdict is self-diagnosing (H4).
+   second-factor challenge; invalid are rejected); **RDP and VNC each answer a real protocol
+   handshake on the tailnet interface and are absent from the public interface (A2)**; a real
+   authentication round-trip on each private door proves **per-user identity** — a user's own
+   credential (VNC using the A13-derived form) attaches that user to their own already-running
+   session, and another user's credential never reaches that session (A12); **a single user
+   connecting over web, RDP and VNC lands on ONE shared session — the same applications, the same
+   live screen, no second forked session (A11)**; the **public surface is enumerated end-to-end
+   and exactly one endpoint — the web door over HTTPS — is reachable from the public internet,
+   every other listener (RDP, VNC, SSH, fleet-tile backends) confirmed absent from the public
+   interface (A2)**; the desktop session is actually rendering **and its geometry tracks the most
+   recently active display across all three access paths (C4)**; multi-user provisioning +
+   isolation hold; health is truthful. A RED verdict is self-diagnosing (H4).
 3. **Image published** to the registry by CI.
-4. **Live-deploy dress rehearsal** on a real host per the runbook: real pixels painted through the
-   browser and native RDP, second-factor enrollment + login, brute-force lockout observed,
-   cross-device resume observed (C2), worker lockdown spot-checked (D3), fleet tiles reach real
-   hosts (A10).
-
-## 7. Gap register (as of 2026-07-12 — drives the build plan; update on every close)
-
-**Ship status: nothing is built in this repo.** This is v0.1 of a zero-base rebuild — the tree is
-empty but for this document. **Every requirement in §3 is therefore unmet here**, and both
-lineages (§1) are unstarted. No claim of coverage may be made for any requirement until it is
-built in THIS repo and proven at the §6 bar; the reference tree's prior verdicts transfer nothing.
-
-**Carried-over findings from the reference tree** (`fedora-desktop`, as of 2026-07-11). These are
-prior knowledge about the reference implementation, recorded to inform the build plan — not
-credit against the bar above, and not a design constraint:
-- **Verification reach of the prior gate:** it proved A2 (partially), B1, C3, D1 (partially), D6,
-  E2, F2, and *port-level-only* A6; it did **not** prove A3/A4 (no real login round-trip), A6 at
-  protocol level, or A7 at all. C2, A10, A4-behavior, and D3 are dress-rehearsal items by nature.
-  Expect the same gaps here unless the gate is built to close them.
-- **A7 (VNC):** the reference grd design shipped **no VNC mirror** and silently ignored the arming
-  credential. A7 is net-new build work, to be gate-verified like every other path.
-- **§G:** net-new. The reference design provisioned **one** agent environment for the admin only,
-  on a shared fleet identity, via an interactive wizard. Per-user claudeboxes (G1), per-user
-  dedicated pre-authorized GitHub Apps (G2), dynamic secret-file-driven environment count (G3),
-  and zero-intervention host provisioning from the ak-private secret file (G4–G5, F1) did not
-  exist.
-- **§H:** the stamped fleet law scoped the in-desktop agent to the platform repo itself — the
-  inverse of H1/H2. Law/policy must be re-stamped to match §H as this repo comes up.
+4. **Live-deploy dress rehearsal** on a real host — for each lineage independently: real pixels
+   painted through **all three first-class access paths (the browser door, native RDP, and native
+   VNC), with all three demonstrably attaching to the SAME running session — no path forks a
+   second session (A11)**; second-factor enrollment + login on the public door; brute-force
+   lockout observed; cross-device resume observed (C2); **the desktop session's geometry follows
+   the most recently active display and scales to it, observed on every path (C4)**; per-user
+   session privacy spot-checked (D2/D3/A9) — a second user's credential lands only on that user's
+   own session on every path and reaches no other user's session; worker lockdown spot-checked
+   (D3); per-user-granted SSH tiles reach the required fleet endpoints over the tailnet — at
+   minimum **the Erebus host AND the fedora-dev container (A10)**; and the **public surface
+   carries exactly one reachable endpoint (A2)**.
