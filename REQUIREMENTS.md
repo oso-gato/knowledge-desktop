@@ -1,6 +1,6 @@
 # knowledge-desktop — Requirements
 
-**v1.0 — founding requirements, owner-approved and finalized 2026-07-12.** This document is the
+**v1.01 — founding requirements + host-class amendment (B4), owner-approved 2026-07-12.** This document is the
 measuring stick: every design, build, validation, and ship decision in this repo is graded against
 it. It states WHAT must be observably true, not HOW. It prescribes no build mechanism and fixes no
 port numbers, config keys, or file paths. A proper name appears here only where the name itself is
@@ -14,7 +14,8 @@ code and the repo's design documents) must TRACE to this document but never cons
 ## 1. Objective
 
 Deliver the owner a **cloud knowledge desktop**: a full graphical Linux desktop running on a
-headless, GPU-less internet VPS, usable from any device, anywhere.
+headless internet host — **with or without a GPU (§2 host classes, B4)** — usable from any device,
+anywhere.
 
 **The access model.** The desktop is reached through three first-class access paths — a **web
 browser door**, **RDP**, and **VNC** — and **all three attach to the user's one running desktop
@@ -81,20 +82,24 @@ graded independently against the §6 bar; §5 records that no lineage deltas are
 
 **Deployment context** (load-bearing — several requirements refer to it)
 
-- **Erebus** is the internet **VPS host**: headless, no GPU, no monitor, no login seat, holding
-  the public IP address.
-- **This product — the knowledge desktop — is a CONTAINER that runs on Erebus.**
+- **The product runs on TWO HOST CLASSES**, and must run on both with identical behaviour (B4):
+  - **Erebus** — the internet **VPS host**: headless, **no GPU**, no monitor, no login seat,
+    holding the public IP address.
+  - **Strix** — the **home-lab server** (an AMD Strix Halo box): headless, no monitor, no login
+    seat, with a **strong integrated GPU** available for acceleration.
+- **This product — the knowledge desktop — is a CONTAINER that runs on such a host** (initially
+  Erebus; Strix as a deployment target as it joins the fleet).
 - **fedora-dev** is another container running on Erebus, a **sibling** of this product: the
   fleet's development environment, where the desktop **platform** is maintained (H2). It is not
   part of this product, and this product neither builds nor operates it.
-- The **fleet** is the owner's set of cooperating machines and containers — hosts such as Erebus,
-  containers such as fedora-dev and this desktop. The fleet **grows**: further endpoints (e.g. a
-  host named **Strix**) join later.
+- The **fleet** is the owner's set of cooperating machines and containers — hosts such as Erebus
+  and Strix, containers such as fedora-dev and this desktop. The fleet **grows**: further
+  endpoints join later.
 
 **The private network is a Tailscale tailnet**
 
 - Every member is a tailnet node: the owner's phones, tablets and laptops; the fleet's **hosts**
-  (Erebus, later Strix); and the fleet's **containers** (fedora-dev, and this desktop).
+  (Erebus, Strix); and the fleet's **containers** (fedora-dev, and this desktop).
 - The tailnet is this product's **private surface**. **RDP, VNC and SSH are reachable from the
   tailnet and from nowhere else** — never from the public internet, by construction.
 - **Tailnet membership is sufficient authentication for the private doors:** no second factor is
@@ -131,9 +136,10 @@ graded independently against the §6 bar; §5 records that no lineage deltas are
 
 | FR | Requirement |
 |---|---|
-| B1 | A **complete graphical desktop** (windowing, file management, terminal) rendered **entirely server-side with no GPU, monitor, or login seat** — headless is a hard prerequisite, never a tunable. |
+| B1 | A **complete graphical desktop** (windowing, file management, terminal) rendered **entirely server-side, with no monitor or login seat, and with no GPU ever required** — headless is a hard prerequisite, never a tunable. A GPU, when present, accelerates (B4); its absence changes nothing but performance. |
 | B2 | Ships the owner's toolset: **Obsidian** (vault editor), **VS Code**, **Firefox**, **1Password** (GUI + CLI), **Ptyxis** (the specifically selected terminal, the default on both lineages), and **Claude Code** (the resident agent, kept current daily). |
 | B3 | A user's agent environment can **build and test its toolsets — including in nested, unprivileged containers — entirely inside the box**, without any host access. |
+| B4 | **Host-class adaptive rendering.** The desktop runs on **both host classes (§2)**: on a **GPU-less host** (Erebus) every pixel is rendered in software on the CPU; on a **GPU-accelerated host** (Strix) the desktop **demonstrably uses the GPU** for rendering — and, where the stack supports it, for encoding — when the host makes the GPU available to the container. GPU presence is detected and exploited **with no code or configuration change to the product**; GPU absence is never an error (N3: a GPU is never required). **Behaviour is identical on both host classes** — the same doors, the same session model, the same toolset, every FR unchanged; only performance may differ. Both lineages satisfy this equally. |
 
 ### C. Sessions
 
@@ -244,4 +250,7 @@ For **each lineage independently**:
    own session on every path and reaches no other user's session; worker lockdown spot-checked
    (D3); per-user-granted SSH tiles reach the required fleet endpoints over the tailnet — at
    minimum **the Erebus host AND the fedora-dev container (A10)**; and the **public surface
-   carries exactly one reachable endpoint (A2)**.
+   carries exactly one reachable endpoint (A2)**. The GPU-less host class (Erebus) is the
+   rehearsal baseline; **on the GPU-accelerated host class (Strix), a rehearsal pass additionally
+   verifies the desktop demonstrably uses the GPU (B4), with behaviour identical to the GPU-less
+   baseline.**
