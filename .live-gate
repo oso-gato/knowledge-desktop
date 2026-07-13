@@ -35,5 +35,9 @@ FENCE_grd="--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw 
 # `--quiet` exits 0 ONLY on `running` — a degraded (failed-unit) skeleton is RED, not green.
 HEALTH_grd='systemctl is-system-running --quiet'
 PROBE_grd='systemctl is-system-running --quiet'
-HEALTH_TRIES_grd="15"
-HEALTH_SLEEP_grd="4"
+# Poll budget 20×6 = 120s ≥ the gate's 90s health-start-period. Head b126468 proved the boot is
+# ~60s on the shared-vCPU host: the health poll (then 15×4=60s) expired at `starting` while the
+# PROBE — the same command, seconds later — PASSED. F2: a slow first boot is never falsely
+# unhealthy; the budget must exceed the real first boot, and 60s did not.
+HEALTH_TRIES_grd="20"
+HEALTH_SLEEP_grd="6"
