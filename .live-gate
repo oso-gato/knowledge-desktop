@@ -31,7 +31,13 @@ CFILE_grd="lineage-grd/Containerfile"
 # dbus-broker fix, which is kept: logind is load-bearing for this lineage). /dev/fuse rides
 # along because the lineage's REAL run contract carries it (nested rootless podman, B3/WP-03),
 # and the fence mirrors the run contract minus publish/secrets.
-FENCE_grd="--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --device /dev/fuse"
+# Cap add-backs (the gate's --cap-drop=ALL floor always precedes; these re-grant on top, and all
+# are userns-scoped under the rootless engine — a subset of podman's own defaults). Evidence from
+# head bb1c75e's probe diagnosis: dbus-broker (User=dbus) crash-looped every ~45s — a non-root
+# User= transition needs SETUID/SETGID (+SETPCAP for per-service cap sets); systemd-tmpfiles
+# fchownat() on /run/utmp + the journal dirs was EPERM — CHOWN/FOWNER/FSETID/DAC_OVERRIDE; the
+# manager signals cross-uid services — KILL.
+FENCE_grd="--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --device /dev/fuse --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL"
 # `--quiet` exits 0 ONLY on `running` — a degraded (failed-unit) skeleton is RED, not green.
 HEALTH_grd='systemctl is-system-running --quiet'
 # SELF-DIAGNOSING probe (H4): the gate prints probe stdout on failure, so a RED carries its own
