@@ -1,0 +1,12 @@
+# knowledge-desktop — LINEAGE 1: XRDP / X11 / XFCE (DESIGN.md §1)
+# WP-01 SKELETON: proves the two-lineage tree + CI + gate plumbing end-to-end. The desktop
+# stack lands per BUILDPLAN (WP-07 walking skeleton onward). Base is digest-pinned (N1);
+# the digest is bumped by PR only (weekly currency rides dnf update at build + the resolve-log).
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
+
+# HEAVY/STABLE-EARLY: (dnf layers land here from WP-07 on)  ·  CHURN-LATE: COPY'd glue below
+COPY shared/entrypoint-skel.sh /usr/local/bin/kd-entrypoint
+RUN chmod 0755 /usr/local/bin/kd-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/kd-entrypoint"]

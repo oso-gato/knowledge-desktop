@@ -1,0 +1,16 @@
+# knowledge-desktop — LINEAGE 2: GRD / Wayland / GNOME (DESIGN.md §2)
+# WP-01 SKELETON: systemd-PID-1 from the first commit — this lineage's init contract is
+# structural (per-user lingering user managers; DESIGN §2), and the nested dev engine cannot
+# boot PID-1 systemd, so ALL runtime proof for this lineage is host-gate tier (CLAUDE.md).
+# The GNOME/GRD stack lands per BUILDPLAN (WP-08 onward). Base digest-pinned (N1).
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
+
+# dbus-broker: systemd-logind (statically wanted by multi-user.target, Restart=always) needs the
+# system bus; without a broker it restart-loops and pins the manager in `starting` forever, so the
+# gate's `is-system-running` HEALTH never passes. logind itself is load-bearing for this lineage
+# (per-user lingering user managers, DESIGN §2) and GNOME/GRD needs D-Bus regardless (WP-08+).
+RUN dnf -y --setopt=install_weak_deps=False install systemd dbus-broker && dnf clean all
+
+ENTRYPOINT ["/sbin/init"]
+STOPSIGNAL SIGRTMIN+3

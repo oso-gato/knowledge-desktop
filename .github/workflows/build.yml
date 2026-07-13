@@ -1,0 +1,72 @@
+# knowledge-desktop CI (WP-01; DESIGN §6):
+#   PR            -> lint + build all targets, publish NOTHING (the host live-gate proves it RUNS)
+#   push to main  -> build + publish :latest / :g<sha> / :YYYYMMDD per lineage + probe
+#   weekly cron   -> --no-cache rebuild + publish (F3 fixed-cadence currency)
+# UNSIGNED by fleet law (image signing dropped as unenforced theatre). Built-in token only.
+# Every published image uploads its full installed-NVR manifest as an artifact (N1 resolve-log).
+name: build
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'   # Mondays 04:17 UTC — F3 weekly rebuild
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash gate/lint.sh
+
+  build:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: xrdp
+            cfile: lineage-xrdp/Containerfile
+            image: knowledge-desktop-xrdp
+          - target: grd
+            cfile: lineage-grd/Containerfile
+            image: knowledge-desktop-grd
+          - target: probe
+            cfile: gate/probe/Containerfile
+            image: knowledge-desktop-probe
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build
+        run: |
+          NOCACHE=""
+          [ "${{ github.event_name }}" = "schedule" ] && NOCACHE="--no-cache"
+          podman build $NOCACHE -t "$IMAGE:build" -f "${{ matrix.cfile }}" .
+
+      - name: resolve-log (installed-NVR manifest, N1)
+        run: |
+          podman run --rm --entrypoint /bin/sh "$IMAGE:build" -c 'rpm -qa | sort' \
+            > "manifest-${{ matrix.target }}.txt"
+          wc -l "manifest-${{ matrix.target }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manifest-${{ matrix.target }}-${{ github.sha }}
+          path: manifest-${{ matrix.target }}.txt
+
+      - name: publish (main + cron only)
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          DATE="$(date -u +%Y%m%d)"
+          for tag in latest "g${GITHUB_SHA::12}" "$DATE"; do
+            podman tag "$IMAGE:build" "$IMAGE:$tag"
+            podman push "$IMAGE:$tag"
+          done
