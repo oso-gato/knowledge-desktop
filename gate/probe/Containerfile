@@ -1,0 +1,10 @@
+# knowledge-desktop — the GATE PROBE image (DESIGN §6/§7): the toolbox the gate harness runs
+# probes from (freerdp/vnc clients, Xvfb screenshots, TOTP, surface scans). Built by CI so the
+# harness pulls a pinned, known toolset instead of installing ad hoc on the host. All class-(a).
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+        freerdp tigervnc xorg-x11-server-Xvfb xdotool ImageMagick \
+        oathtool curl python3 iproute nmap-ncat openssh-server git-core \
+    && dnf clean all

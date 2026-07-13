@@ -1,0 +1,32 @@
+# knowledge-desktop .live-gate — v0 (WP-01): the workload-shipped, self-describing live-gate spec.
+# PARSED — NEVER SOURCED — by the host's live-gate (lg_load reads KEY=VALUE line by line; this file
+# travels in the UNTRUSTED PR head). INERT KEY=VALUE pairs only; no cross-variable references;
+# single-quote HEALTH/PROBE (their $() run later INSIDE the fenced candidate, never on the host).
+#
+# TWO LINEAGES, one repo (REQUIREMENTS §1 Mandate; DESIGN §0): separate BUILDS, so this is a
+# MULTI-TARGET spec — the gate builds + live-runs + probes EACH target independently.
+#   * xrdp (lineage-xrdp/Containerfile) — bash PID 1 (kd-entrypoint).
+#   * grd  (lineage-grd/Containerfile)  — systemd PID 1.
+# v0 asserts the honest minimum: each candidate BOOTS and reaches its truthful init-complete
+# state (N4/N5 seed — no theater: the marker exists only after init, systemd must reach
+# `running`, not `degraded`). WP-02 grows the fenced-headscale harness + the probe catalog
+# (DESIGN §7); each capability WP extends HEALTH/PROBE in the same PR that lands the capability.
+# shellcheck disable=SC2034 # keys are read by the gate's external parser, never by this file
+
+LIVE_GATE_TARGETS="xrdp grd"
+
+# ---- LINEAGE 1: xrdp ------------------------------------------------------------------------
+CFILE_xrdp="lineage-xrdp/Containerfile"
+HEALTH_xrdp='test -f /run/kd/boot-ok'
+PROBE_xrdp='test -f /run/kd/boot-ok'
+HEALTH_TRIES_xrdp="10"
+HEALTH_SLEEP_xrdp="3"
+
+# ---- LINEAGE 2: grd (systemd PID 1) ---------------------------------------------------------
+CFILE_grd="lineage-grd/Containerfile"
+FENCE_grd="--systemd=always"
+# `--quiet` exits 0 ONLY on `running` — a degraded (failed-unit) skeleton is RED, not green.
+HEALTH_grd='systemctl is-system-running --quiet'
+PROBE_grd='systemctl is-system-running --quiet'
+HEALTH_TRIES_grd="15"
+HEALTH_SLEEP_grd="4"
