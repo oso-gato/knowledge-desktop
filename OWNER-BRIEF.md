@@ -132,3 +132,14 @@ iterating; where brief and doc disagreed, the brief won.
 - §2 gains the two host classes; §6 item 4 gains the Strix GPU-verification rehearsal pass.
 - Committed as **v1.01** (fbc788d). Design workflow restarted against v1.01 (was 2/6 into a
   v1.0-based derive; stopped + prompts patched + relaunched).
+
+## R10 — GPU: rendering is the need, CPU encode accepted (2026-07-13)
+- Owner decision closing DESIGN.md OPEN FORK 1: **GPU-accelerated RENDERING is the requirement;
+  CPU (software) video ENCODE is fine.**
+- Finding behind it: AMD GPU H.264 encode is unavailable in BOTH door stacks anyway — xrdp hardware
+  encode = NVENC-only (no AMD VA-API); grd hardware encode = NVENC-only, AMD VA-API is an unshipped
+  upstream item (gnome-remote-desktop #122); Fedora also strips the codec from mesa. So the fork was
+  mis-scoped as "a provenance decision" — it was closer to unavailable-on-AMD-regardless.
+- Effect: B4 text unchanged (its "where the stack supports it" encode clause is satisfied vacuously);
+  libva/mesa-va-drivers stay OUT (N2); no RPM Fusion needed. GPU RENDERING (glamor L1 / Mutter-radeonsi
+  L2) remains fully required and is the Strix rehearsal evidence chain. DESIGN.md §2/§9/§11 corrected.
