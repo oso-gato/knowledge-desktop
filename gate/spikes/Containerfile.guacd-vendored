@@ -1,0 +1,38 @@
+# SPIKE v4c (throwaway): positive-path proof — vendored FreeRDP 3.14.0 (last before the 3.15 break)
+# built at a private prefix /opt/guacamole, then guacd 1.6.0 built against it. Success = guacd's RDP
+# client plugin .so exists ⇒ the web-door build path is proven feasible (closes V4). Not shipped;
+# WP-10 adds GPG verification + a scoped glibc patch instead of -Wno-error.
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+        gcc gcc-c++ make cmake autoconf automake libtool pkgconf-pkg-config tar gzip \
+        openssl-devel zlib-devel cjson-devel uriparser-devel opus-devel fuse3-devel \
+        cairo-devel libjpeg-turbo-devel libpng-devel libuuid-devel \
+        pango-devel libssh2-devel libvncserver-devel libwebsockets-devel \
+        pulseaudio-libs-devel libvorbis-devel libwebp-devel libtool-ltdl-devel \
+    && dnf clean all
+
+# --- vendored FreeRDP 3.14.0 into /opt/guacamole (minimal: no X11/SDL/server clients) ---
+ADD https://github.com/FreeRDP/FreeRDP/archive/refs/tags/3.14.0.tar.gz /tmp/frdp.tar.gz
+RUN set -eo pipefail; cd /tmp && tar xzf frdp.tar.gz && cd FreeRDP-3.14.0 \
+    && cmake -B build -S . \
+        -DCMAKE_INSTALL_PREFIX=/opt/guacamole -DCMAKE_BUILD_TYPE=Release \
+        -DWITH_SERVER=OFF -DWITH_X11=OFF -DWITH_CLIENT_SDL=OFF -DWITH_SAMPLE=OFF \
+        -DBUILD_TESTING=OFF -DWITH_PCSC=OFF -DWITH_CUPS=OFF -DWITH_FFMPEG=OFF \
+        -DWITH_SWSCALE=OFF -DWITH_MANPAGES=OFF -DCHANNEL_URBDRC=OFF -DWITH_KRB5=OFF \
+        -DWITH_OPUS=OFF -DWITH_WEBVIEW=OFF -DWITH_LIBSYSTEMD=OFF \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build \
+    && echo "FREERDP-INSTALLED: $(ls /opt/guacamole/lib*/libfreerdp3.so* 2>/dev/null || echo MISSING)"
+
+# --- guacd 1.6.0 against the vendored FreeRDP (PKG_CONFIG_PATH + rpath to /opt/guacamole) ---
+ADD https://archive.apache.org/dist/guacamole/1.6.0/source/guacamole-server-1.6.0.tar.gz /tmp/g.tar.gz
+RUN set -eo pipefail; cd /tmp && tar xzf g.tar.gz && cd guacamole-server-1.6.0 \
+    && export PKG_CONFIG_PATH=/opt/guacamole/lib64/pkgconfig:/opt/guacamole/lib/pkgconfig \
+    && ./configure --disable-dependency-tracking CFLAGS="-Wno-error -I/opt/guacamole/include/freerdp3 -I/opt/guacamole/include/winpr3" LDFLAGS="-L/opt/guacamole/lib64 -L/opt/guacamole/lib -Wl,-rpath,/opt/guacamole/lib64" 2>&1 | tee /tmp/cfg.log \
+    && echo "=== configure RDP verdict ===" && grep -iE "RDP.*yes|RDP.*no|freerdp" /tmp/cfg.log | tail -8 \
+    && make -j"$(nproc)" 2>&1 | tail -5 \
+    && test -e src/protocols/rdp/.libs/libguac-client-rdp.so \
+    && echo "SPIKE-V4C-PASS: guacd 1.6.0 RDP plugin BUILT against vendored FreeRDP 3.14.0" \
+    && ls -l src/protocols/rdp/.libs/libguac-client-rdp.so*
