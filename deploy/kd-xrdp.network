@@ -1,0 +1,6 @@
+# kd-xrdp.network — dedicated podman network for lineage 1 (DESIGN §2). No sibling containers
+# share it, so a wildcard-bound private-door listener has an empty non-tailnet reach set (the L2
+# A2 mechanism; harmless-but-consistent for L1, which binds explicitly). F4: distinct from kd-grd.
+[Network]
+NetworkName=kd-xrdp
+Internal=false

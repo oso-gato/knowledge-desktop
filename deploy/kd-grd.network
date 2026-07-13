@@ -1,0 +1,7 @@
+# kd-grd.network — dedicated podman network for lineage 2 (DESIGN §2, [ADJ-32]). grd cannot bind
+# a specific address (wildcard add_inet_port), so isolation rests on: ports never published
+# beyond :8443 + NO sibling on this network ⇒ the non-tailnet reach set is empty. F4: distinct
+# from kd-xrdp.
+[Network]
+NetworkName=kd-grd
+Internal=false
