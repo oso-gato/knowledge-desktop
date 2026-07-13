@@ -24,7 +24,14 @@ HEALTH_SLEEP_xrdp="3"
 
 # ---- LINEAGE 2: grd (systemd PID 1) ---------------------------------------------------------
 CFILE_grd="lineage-grd/Containerfile"
-FENCE_grd="--systemd=always"
+# The documented systemd-PID-1 fence from the gate's own schema reference
+# (fedora-bootstrap/validation/live-gate.sample): without --cgroupns=host + a writable
+# /sys/fs/cgroup, PID-1 systemd cannot finish setting up its cgroup hierarchy and the manager
+# pins in `starting` forever — exactly the two RED signatures on this PR (unchanged by the
+# dbus-broker fix, which is kept: logind is load-bearing for this lineage). /dev/fuse rides
+# along because the lineage's REAL run contract carries it (nested rootless podman, B3/WP-03),
+# and the fence mirrors the run contract minus publish/secrets.
+FENCE_grd="--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --device /dev/fuse"
 # `--quiet` exits 0 ONLY on `running` — a degraded (failed-unit) skeleton is RED, not green.
 HEALTH_grd='systemctl is-system-running --quiet'
 PROBE_grd='systemctl is-system-running --quiet'
