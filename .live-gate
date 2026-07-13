@@ -34,7 +34,10 @@ CFILE_grd="lineage-grd/Containerfile"
 FENCE_grd="--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --device /dev/fuse"
 # `--quiet` exits 0 ONLY on `running` — a degraded (failed-unit) skeleton is RED, not green.
 HEALTH_grd='systemctl is-system-running --quiet'
-PROBE_grd='systemctl is-system-running --quiet'
+# SELF-DIAGNOSING probe (H4): the gate prints probe stdout on failure, so a RED carries its own
+# evidence — the manager state, the STUCK JOBS (the answer to a `starting` pin), the failed
+# units, and a journal tail. Quiet + exit 0 on success (identical gate semantics to v0).
+PROBE_grd='systemctl is-system-running --quiet || { echo "=state="; systemctl is-system-running; echo "=jobs="; systemctl list-jobs --no-legend; echo "=failed="; systemctl --failed --no-legend; echo "=journal="; journalctl -b -p warning -n 25 --no-pager; exit 1; }'
 # Poll budget 20×6 = 120s ≥ the gate's 90s health-start-period. Head b126468 proved the boot is
 # ~60s on the shared-vCPU host: the health poll (then 15×4=60s) expired at `starting` while the
 # PROBE — the same command, seconds later — PASSED. F2: a slow first boot is never falsely
