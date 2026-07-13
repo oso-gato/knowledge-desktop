@@ -6,7 +6,7 @@ Traces to REQUIREMENTS.md v1.01. Synthesized from six subsystem designs and six 
 
 ## 0. Shape of the product
 
-Two lineages, one repo, one requirements document. Each lineage is a complete OCI image (`ghcr.io/oso-gato/knowledge-desktop-xrdp`, `…-grd`), run rootless under podman via a systemd quadlet on two host classes (Erebus: no GPU; Strix: AMD Strix Halo iGPU). Inside each container: N OS users (roster-defined), N prestarted desktop sessions, three doors into each user's ONE session (web/HTTPS public; RDP+VNC+SSH tailnet-only), per-user resident-agent environments, per-user nested rootless podman.
+Two lineages, one repo, one requirements document. Each lineage is a complete OCI image (`ghcr.io/oso-gato/knowledge-desktop-xrdp`, `…-grd`), run rootless under podman via a systemd quadlet on two host classes: **Erebus** — Hostinger KVM4 VPS (4 vCPU / 16 GB / Fedora Cloud), **no GPU**, pure-CPU software rendering; and **Strix** — AMD Strix Halo home-lab box, strong iGPU, GPU-accelerated rendering. One image serves both; only performance differs (B4). Inside each container: N OS users (roster-defined), N prestarted desktop sessions, three doors into each user's ONE session (web/HTTPS public; RDP+VNC+SSH tailnet-only), per-user resident-agent environments, per-user nested rootless podman.
 
 **Base OS (both lineages): Fedora current stable**, base image digest-pinned per build, full installed-NVR manifest resolve-logged as a CI artifact (N1). Rationale **re-derived after challenge L1-#4 refuted the original Debian claim** (trixie ships xrdp 0.10.1, which does have GFX): Fedora still wins on (i) xrdp 0.10.6 + the **xorgxrdp-glamor** subpackage (the entire L1 B4 mechanism as one class-(a) artifact); (ii) grd 50.x with the **VNC backend compiled in** — Debian/Ubuntu disable it, which would kill A7 on L2 outright (decisive); (iii) Ptyxis as a class-(a) distro package; (iv) Mesa 26.x with gfx1151 (Strix Halo) support; (v) legal H.264 via the Fedora-managed Cisco OpenH264 repo. One base policy statement for both lineages **[ADJ-20]**.
 
@@ -239,7 +239,7 @@ Tier key: **G** = loopback-fenced gate (automated, pre-merge) · **B** = in-box 
 | V33 | A2 literal: external public scan == {web port}; tiles reach Erebus + fedora-dev; ACME issuance on 443 | rehearsal | R |
 | V34 | F4 co-deploy both lineages green; quadlet byte-identity across hosts | rehearsal | R |
 | V35 | E3: recreate preserves homes/uids/nested stores/TOTP/grants | upgrade probe | G |
-| V36 | N idle sessions RSS on VPS sizing (capacity disclosure) | soak measurement | R |
+| V36 | Capacity on the GPU-less class (Hostinger KVM4: 4 vCPU / 16 GB): N concurrent sessions' RSS + CPU under software rendering, **XFCE/L1 vs GNOME-Mutter-llvmpipe/L2 measured separately** — L2 software compositing is materially CPU-heavier, so this bounds practical concurrent users per lineage on the GPU-less host and is disclosed as a capacity (not correctness) property; Strix's iGPU lifts it | soak measurement | R |
 | V37 | iOS/iPadOS full desktop + keyboard | manual | R |
 
 ## 11. OPEN FORKS (owner)
