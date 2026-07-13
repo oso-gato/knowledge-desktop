@@ -6,16 +6,14 @@
 ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
 FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
 
-# dbus-broker — the system D-Bus broker. Design-sanctioned for this lineage (DESIGN §2): GNOME +
-# systemd-logind (the per-user lingering managers depend on it) require a system bus; it is the
-# same broker lineage-xrdp installs (DESIGN §1). N2 justification: logind, statically wanted by
-# multi-user.target, cannot reach `running` without a bus, so a systemd-PID-1 image needs it now.
-# NOTE ON THE FIX HISTORY: the boot only reaches `running` because the .live-gate FENCE grants the
-# capability set (SETUID/SETGID/SETPCAP/CHOWN/... ) that dbus-broker's `User=dbus` transition needs
-# under the gate's --cap-drop=ALL floor. The broker's PRESENCE alone does not fix the boot — the
-# fence caps do; the two are complementary. (Corrects an earlier claim that installing the broker
-# was itself the fix.)
-RUN dnf -y --setopt=install_weak_deps=False install systemd dbus-broker && dnf clean all
+# MINIMAL by design (N2): the skeleton installs ONLY systemd. There is no D-Bus consumer at this
+# stage — GNOME, gnome-remote-desktop, and systemd-logind (the per-user lingering managers) all
+# arrive with the desktop stack at WP-08, and dbus-broker lands THEN, as a deliberate design
+# choice justified by those consumers. Installing it now would be a package with no consumer.
+# The skeleton's honest claim is only "systemd-PID-1 boots to a terminal state" — the .live-gate
+# HEALTH accepts running|degraded accordingly (a bare skeleton's statically-wanted logind unit
+# fails for lack of its stack; that is expected, not a defect, until WP-08 tightens HEALTH to running).
+RUN dnf -y --setopt=install_weak_deps=False install systemd && dnf clean all
 
 ENTRYPOINT ["/sbin/init"]
 STOPSIGNAL SIGRTMIN+3
