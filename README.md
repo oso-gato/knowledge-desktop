@@ -29,7 +29,8 @@ place; the build is underway per [BUILDPLAN.md](BUILDPLAN.md).
 
 | Doc | Role |
 |---|---|
-| [REQUIREMENTS.md](REQUIREMENTS.md) | WHAT must be observably true (v1.01, owner-approved) — the measuring stick |
+| [00-OBJECTIVES.md](00-OBJECTIVES.md) | The objective — the cloud knowledge desktop this repo delivers (owner-approved spec of record) |
+| [00-REQUIREMENTS.md](00-REQUIREMENTS.md) | WHAT must be observably true (v1.01, owner-approved) — the measuring stick |
 | [DESIGN.md](DESIGN.md) | The architecture: components, mechanisms, FR trace, empirical-validation register |
 | [BUILDPLAN.md](BUILDPLAN.md) | Ordered work packages, each one PR |
 | [CLAUDE.md](CLAUDE.md) | Rules for the agents building this repo |
