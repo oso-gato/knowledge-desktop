@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# kd-health (DESIGN §6 [ADJ-6]; WP-07 v1) — the merged container health command, referenced by
+# the WP-03 quadlets (HealthCmd=kd-health) and the .live-gate. TRUTHFUL (F2): a dead desktop
+# stack is never healthy; a slow first boot reads as unhealthy only until init completes
+# (HealthStartPeriod covers the window); it asserts REAL state, never a cached flag alone.
+#
+# v1 = the unconditional tier for the L1 walking skeleton:
+#   1. init completed (the entrypoint's /run/kd/boot-ok, removed on TERM)
+#   2. session manager alive (xrdp-sesman)
+#   3. RDP front listener alive (xrdp) AND answering on loopback :3389
+#   4. when a roster was provisioned: the provision-complete flag (skeleton-mode boots — the
+#      DISCLOSED no-roster gate residual, see E6 — carry /run/kd/skeleton-mode instead)
+# Later tiers per design: web deep-liveness GET (WP-10), tailnet-tier listeners iff the
+# tailnet iface exists (WP-02 fence / tailnet WPs), `systemctl --failed` on L2 (WP-08).
+set -u
+fail(){ echo "kd-health: UNHEALTHY — $*"; exit 1; }
+
+[ -f /run/kd/boot-ok ] || fail "init incomplete (no /run/kd/boot-ok)"
+pgrep -x xrdp-sesman >/dev/null || fail "xrdp-sesman not running"
+pgrep -x xrdp        >/dev/null || fail "xrdp not running"
+# a real TCP answer on the loopback door, not just a process (N5)
+timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/3389' 2>/dev/null \
+    || fail "no answer on loopback :3389"
+if [ ! -f /run/kd/skeleton-mode ]; then
+    [ -f /run/kd/provision-complete ] || fail "provisioning never completed"
+fi
+exit 0

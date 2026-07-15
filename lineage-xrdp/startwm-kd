@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# startwm-kd (LINEAGE 1; DESIGN §1, WP-07) — the session wrapper sesman runs AS THE USER.
+# Provides the session bus at the DESIGNED well-known path ($XDG_RUNTIME_DIR/bus — challenge
+# VST-#7: consumers like the notification daemon and future sync tooling must find ONE bus at
+# ONE address, never a private random dbus-run-session address), belts the no-blank rule
+# (L1-#7: xset here + the xorg.conf ServerFlags), then execs the XFCE session.
+#
+# HONEST NOTE (design reconcile, recorded in the WP-07 PR): DESIGN §1 words the bus as "the
+# systemd user bus", but this lineage is deliberately bash-PID-1 (.live-gate v0) — there is no
+# systemd user manager. The CONTRACT the design fixes is the bus ADDRESS
+# (unix:path=$XDG_RUNTIME_DIR/bus); here dbus-daemon binds exactly that address, so every
+# consumer written against the contract works unchanged. WP-17 (vault-sync "user units") must
+# design to this reality on L1.
+set -u
+
+uid="$(id -u)"
+export XDG_RUNTIME_DIR="/run/user/${uid}"
+# kd-session-enable pre-creates this 0700 user-owned; belt for direct/manual sessions:
+[ -d "$XDG_RUNTIME_DIR" ] || mkdir -p -m 0700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+if [ ! -S "${XDG_RUNTIME_DIR}/bus" ]; then
+    dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --fork --nopidfile
+fi
+
+# no-blank belt (server side is xorg.conf ServerFlags; both halves per L1-#7)
+xset s off -dpms || true
+
+exec xfce4-session

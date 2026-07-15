@@ -474,11 +474,24 @@ def main():
     if want_shared:
         shared_folder(applied)
 
-    # ---- pass 2: session/linger enablement (WP-07/WP-08 hook) ----
-    se = hook("kd-session-enable")
+    # ---- pass 2: session prestart/enablement (per-lineage hook; L1 = sesrun) ----
+    # The phrase rides the hook's STDIN (challenge L1-#12: sesman authenticates the prestart
+    # with the user's credential on an fd; exactly one component — this one — parses the
+    # roster). A prestart failure is NOT box-fatal: credentials are already installed, so
+    # the user can still connect interactively; log value-free and continue (F2/MVP).
+    # KD_PRESTART=0 skips prestart (doors still serve, sessions created on-demand): used by
+    # the in-box gate, where the nested engine's forced shared netns makes concurrent Xorg
+    # displays collide — the warm-session prestart (C3) is proven at the HOST gate (own netns).
+    se = hook("kd-session-enable") if os.environ.get("KD_PRESTART", "1") != "0" else None
+    if se is None and os.environ.get("KD_PRESTART", "1") == "0":
+        log("prestart skipped (KD_PRESTART=0) — doors serve, sessions created on-demand")
     for u in applied:
         if se:
-            run([se, u["username"]])
+            try:
+                run([se, u["username"]], stdin_data=u["password"] + "\n")
+            except Exception as exc:  # noqa: BLE001 — type name only (E1)
+                log(f"session prestart failed ({type(exc).__name__}) — doors still serve "
+                    f"interactively: {u['username']}")
         else:
             log(f"hook absent (lands WP-07/WP-08): kd-session-enable — "
                 f"no session prestart for {u['username']}")
