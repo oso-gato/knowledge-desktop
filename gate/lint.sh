@@ -12,6 +12,13 @@ while IFS= read -r f; do
     bash -n "$f" || err "bash -n: $f"
 done < <(git ls-files '*.sh')
 
+# ---- 1b. every shipped python compiles (kd-provision has no .py suffix: detect by shebang) ----
+while IFS= read -r f; do
+    head -1 "$f" | grep -q '^#!.*python3' || continue
+    python3 -m py_compile "$f" 2>/dev/null || err "py_compile: $f"
+done < <(git ls-files)
+find . -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null
+
 # ---- 2. .live-gate: parsed-not-sourced schema shape ------------------------------------------
 LG=".live-gate"
 if [ ! -f "$LG" ]; then
