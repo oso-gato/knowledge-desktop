@@ -23,8 +23,13 @@ Contract (WP-06):
     regenerated every run.
   - Apply-failure policy (challenge US-#14): a worker's apply failure rolls back that user
     (this-run creations only) and boot continues; an admin apply failure aborts nonzero.
-  - E1: value-free logging - no roster value is ever printed; errors name the FIELD PATH and
-    the RULE violated, never the content.
+  - E1 (re-scoped per DESIGN §4): no SECRET value — password, token, key, authkey — is ever
+    printed, placed in argv, or exported to any environment; secrets travel exclusively via
+    subprocess stdin. Validation errors name the FIELD PATH and the RULE violated, never the
+    content. DISCLOSED residuals: usernames (roster values, but identities rather than
+    secrets) appear in provisioning logs by design; an unknown-KEY rejection echoes the
+    offending key NAMES (a secret pasted into key position would surface — operator error
+    class, E6-disclosable).
 
 Interfaces this drives (installed per lineage; each optional hook is loudly logged when
 absent so a missing consumer is visible, never silent):
@@ -33,7 +38,8 @@ absent so a missing consumer is visible, never silent):
   /usr/libexec/kd/kd-web-sync <verb> <user>       optional  web door sync (WP-10)
 
 Exit codes: 0 provisioned (excluded workers, if any, are logged) · 2 roster invalid (fatal
-validation) · 3 roster missing/unreadable (E2 fail-fast) · 4 admin apply failure (abort).
+validation; uid-range exhaustion included) · 3 roster missing, unreadable, or not parseable
+as JSON (E2 fail-fast) · 4 admin apply failure (abort).
 
 Wiring status (honest, N4): shipped into both lineage images by WP-06 but not yet invoked at
 boot - the boot chain (entrypoint/systemd unit enablement) and the E2 fail-fast-on-absent-
@@ -41,8 +47,9 @@ secret observable land with WP-07 (L1) / WP-08 (L2), once the gate harness (WP-0
 roster fixtures. Until then this is proven by the in-box suite shared/tests/.
 
 Test seams (used only by shared/tests/; harmless in production):
-  KD_ROSTER / KD_STATE / KD_RUN     path overrides
-  KD_TEST_FAIL_APPLY=<user>         injects an apply-phase failure for that user (US-#14 fixture)
+  KD_ROSTER / KD_STATE / KD_RUN / KD_LIBEXEC   path overrides
+  KD_TEST_FAIL_APPLY=<user>        injects an apply failure BEFORE account creation
+  KD_TEST_FAIL_APPLY_POST=<user>   injects one AFTER creation (exercises real rollback)
 """
 
 import json
@@ -99,6 +106,14 @@ def check_user_block(u, path, endpoint_names):
     unknown = set(u) - USER_KEYS
     if unknown:
         errs.append(f"{path}: unknown key(s) {sorted(unknown)} (closed schema, D6)")
+    # a JSON null anywhere in a user block is a defect, never "absent" — without this, a
+    # null username/password sailed through the None-guarded shape checks below and blew
+    # up the whole boot as an uncaught TypeError (independent-review finding, D6 inverted)
+    for k, v in u.items():
+        if v is None:
+            errs.append(f"{path}.{k}: null value (closed schema, D6)")
+    if errs:
+        return errs
     for k in USER_REQUIRED:
         if k not in u:
             errs.append(f"{path}.{k}: required key missing")
@@ -167,8 +182,8 @@ def validate(roster, uidmap):
     unknown = set(roster) - TOP_KEYS
     if unknown:
         die(2, f"roster: unknown top-level key(s) {sorted(unknown)} (closed schema, D6)")
-    if roster.get("version") != 1:
-        die(2, "roster.version: must be 1")
+    if type(roster.get("version")) is not int or roster.get("version") != 1:
+        die(2, "roster.version: must be the integer 1")  # bool-strict: True == 1 must not pass
 
     box = roster.get("box")
     if not isinstance(box, dict):
@@ -194,7 +209,7 @@ def validate(roster, uidmap):
             die(2, f"roster.box.endpoints.{name}: must carry exactly {sorted(EP_KEYS)}")
         if not isinstance(ep["host"], str) or not ep["host"]:
             die(2, f"roster.box.endpoints.{name}.host: not a non-empty string")
-        if not isinstance(ep["port"], int) or not 0 < ep["port"] < 65536:
+        if type(ep["port"]) is not int or not 0 < ep["port"] < 65536:  # bool-strict
             die(2, f"roster.box.endpoints.{name}.port: not a valid port number")
         if not isinstance(ep["user"], str) or not ep["user"]:
             die(2, f"roster.box.endpoints.{name}.user: not a non-empty string")
@@ -305,6 +320,10 @@ def apply_user(u, uid, created):
     else:
         run(["usermod", "-U", name], check=False)  # reinstatement (D5): unlock
     home = pw_ent.pw_dir
+    if os.environ.get("KD_TEST_FAIL_APPLY_POST") == name:
+        # second injection point AFTER account creation, so the rollback path (userdel -r)
+        # is exercised for real, not just the pre-creation skip (review coverage note)
+        raise RuntimeError("injected post-creation apply failure (KD_TEST_FAIL_APPLY_POST)")
 
     # door credentials — one phrase, per-lineage derivations, stdin only (A13/E1)
     cred = hook("kd-cred")
@@ -312,17 +331,22 @@ def apply_user(u, uid, created):
         raise RuntimeError("kd-cred installer missing from the image (REQUIRED interface)")
     run([cred, "install", name], stdin_data=u["password"] + "\n")
 
-    # ssh authorized_keys (roster-supplied account material; the sshd door itself is WP-13)
+    # ssh authorized_keys (roster-supplied account material; the sshd door itself is WP-13).
+    # Reconciled BOTH ways: an emptied/removed roster key list REMOVES the file — key
+    # revocation for a still-active user must land at next boot, never fail open
+    # (independent-review finding; SECRETS.md rotation contract / D5)
     keys = u.get("ssh_authorized_keys") or []
+    sshd = os.path.join(home, ".ssh")
+    ak = os.path.join(sshd, "authorized_keys")
     if keys:
-        sshd = os.path.join(home, ".ssh")
         os.makedirs(sshd, mode=0o700, exist_ok=True)
-        ak = os.path.join(sshd, "authorized_keys")
         with open(ak, "w", encoding="utf-8") as f:
             f.write("\n".join(keys) + "\n")
         os.chmod(ak, 0o600)
         os.chown(ak, uid, pw_ent.pw_gid)
         os.chown(sshd, uid, pw_ent.pw_gid)
+    elif os.path.exists(ak):
+        os.unlink(ak)
 
     # web door sync (WP-10 consumer; optional hook until it lands)
     ws = hook("kd-web-sync")
@@ -361,9 +385,12 @@ def rollback_user(name, created):
 
 
 def disable_user(name):
-    """D5 disable-not-delete: OS lock + door-credential revoke + grants removal; home kept."""
+    """D5 disable-not-delete: OS lock + door-credential revoke + grants removal; home kept.
+
+    Returns True only when a real account was disabled (so the summary count is truthful —
+    a rolled-back worker with no account is not "disabled")."""
     if account_exists(name) is None:
-        return
+        return False
     run(["usermod", "-L", name], check=False)
     cred = hook("kd-cred")
     if cred:
@@ -377,6 +404,7 @@ def disable_user(name):
     else:
         log(f"hook absent (lands WP-10): kd-web-sync — web identity for {name} not disabled")
     log(f"disabled (D5, home preserved): {name}")
+    return True
 
 
 def shared_folder(users):
@@ -424,18 +452,24 @@ def main():
             apply_user(u, uid, created)
             write_grants(u, endpoints)
             applied.append(u)
-        except (RuntimeError, subprocess.CalledProcessError):
+        except Exception as exc:  # noqa: BLE001 — ANY single-user failure must honor US-#14:
+            # rollback that user, never abort the boot on a worker (and never let an
+            # unhandled traceback print, which could carry roster-adjacent content — E1).
+            # Only the exception TYPE is logged; messages may embed values.
             if u["_role"] == "admin":
                 rollback_user(name, created)
-                die(4, "admin apply failed => abort (E2; policy US-#14)")
-            log(f"worker apply failed => rolled back + skipped (policy US-#14): {name}")
+                die(4, f"admin apply failed ({type(exc).__name__}) => abort "
+                       f"(E2; policy US-#14)")
+            log(f"worker apply failed ({type(exc).__name__}) => rolled back + skipped "
+                f"(policy US-#14): {name}")
             rollback_user(name, created)
 
     # ---- disable pass (D5): kd-managed users no longer in the roster ----
     active = {u["username"] for u in applied}
+    disabled = 0
     for name in sorted(uidmap):
         if name not in active:
-            disable_user(name)
+            disabled += 1 if disable_user(name) else 0
 
     if want_shared:
         shared_folder(applied)
@@ -452,7 +486,7 @@ def main():
     with open(os.path.join(RUN, "provision-complete"), "w", encoding="utf-8") as f:
         f.write("ok\n")
     log(f"provisioned: {len(applied)} user(s), {excluded} worker(s) excluded, "
-        f"{len(uidmap) - len(active)} disabled")
+        f"{disabled} disabled")
 
 
 if __name__ == "__main__":

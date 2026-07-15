@@ -39,6 +39,8 @@ row_mixed(){
     t "shadow: adm set + unlocked"      bash -c '[[ "$(shadow_field kadm)" == \$* ]]'
     t "vnc: file == vncpasswd(first 8)" \
         bash -c 'cmp -s <(printf "%s\n" "adm-aaaa" | vncpasswd -f) /home/kadm/.kd/vncpasswd'
+    t "vnc: full 13-char phrase derives the SAME bytes (V8 truncation semantics)" \
+        bash -c 'cmp -s <(printf "%s\n" "adm-aaaa-0000" | vncpasswd -f) /home/kadm/.kd/vncpasswd'
     t "vnc: 0600 kadm:kadm" \
         bash -c '[ "$(mode_of /home/kadm/.kd/vncpasswd)" = 600 ] && [ "$(owner_of /home/kadm/.kd/vncpasswd)" = kadm:kadm ]'
     t "ssh: adm authorized_keys 0600 + fixture key" \
@@ -69,7 +71,7 @@ row_mixed(){
     t "re-run: rc=0"                    [ "$rc" = 0 ]
     t "re-run: uids stable, uidmap 3 lines" \
         bash -c '[ "$(id -u gw2)" = 2002 ] && [ "$(grep -c . /var/lib/kd/uidmap)" = 3 ]'
-    # D5 disable-not-delete: gw2 leaves the roster
+    # D5 disable-not-delete: gw2 leaves the roster; gw1 stays but its ssh key is REVOKED
     prov roster-mixed-step2.json; rc=$?
     t "disable: rc=0"                   [ "$rc" = 0 ]
     t "disable: gw2 shadow LOCKED"      bash -c '[[ "$(shadow_field gw2)" == !* ]]'
@@ -77,13 +79,31 @@ row_mixed(){
     t "disable: gw2 home PRESERVED"     [ -d /home/gw2 ]
     t "disable: gw2 uid still reserved" bash -c 'grep -q "^gw2 2002$" /var/lib/kd/uidmap'
     t "disable: logged (D5)"            bash -c 'grep -q "disabled (D5, home preserved): gw2" "$OUT"'
-    # reinstatement: gw2 returns — SAME uid, unlocked, credentials back
+    t "key revocation: still-active gw1 emptied key list => file REMOVED (never fail-open)" \
+        [ ! -e /home/gw1/.ssh/authorized_keys ]
+    # reinstatement: gw2 returns — SAME uid, unlocked, credentials back; gw1 key restored
     prov roster-mixed.json; rc=$?
     t "reinstate: rc=0"                 [ "$rc" = 0 ]
     t "reinstate: same uid 2002"        bash -c '[ "$(id -u gw2)" = 2002 ]'
     t "reinstate: gw2 unlocked"         bash -c '[[ "$(shadow_field gw2)" == \$* ]]'
     t "reinstate: gw2 vnc secret back" \
         bash -c 'cmp -s <(printf "%s\n" "gw2-cccc" | vncpasswd -f) /home/gw2/.kd/vncpasswd'
+    t "reinstate: gw1 key back"         bash -c 'grep -q AAAAfixtureKEYgw1 /home/gw1/.ssh/authorized_keys'
+    e1_scan
+}
+
+row_nulls(){
+    # JSON null in a WORKER block = that worker excluded, boot continues (the D6 branch the
+    # independent review proved inverted pre-fix: an uncaught TypeError killed the boot)
+    prov roster-nulls.json; local rc=$?
+    t "nulls: rc=0 (boot continues)"    [ "$rc" = 0 ]
+    t "nulls: census kadm+gw1 only"     bash -c 'id -u kadm >/dev/null && id -u gw1 >/dev/null && [ "$(grep -c . /var/lib/kd/uidmap)" = 2 ]'
+    t "nulls: 2 workers excluded value-free" \
+        bash -c '[ "$(grep -c "worker excluded (D6)" "$OUT")" = 2 ] && grep -q "null value (closed schema, D6)" "$OUT"'
+    # JSON null in the ADMIN block = fatal validation, rc 2 — never a traceback
+    prov roster-null-admin.json; rc=$?
+    t "null-admin: rc=2 (fatal, not a crash)" [ "$rc" = 2 ]
+    t "null-admin: no traceback printed" bash -c '! grep -q "Traceback" "$OUT"'
     e1_scan
 }
 
@@ -123,6 +143,18 @@ row_fail_worker(){
     e1_scan
 }
 
+row_fail_worker_post(){
+    # POST-creation injection: the account EXISTS when the failure hits, so the userdel -r
+    # rollback branch is exercised for real (review coverage note: the pre-creation seam
+    # alone would pass even with a no-op rollback_user)
+    prov roster-mixed.json KD_TEST_FAIL_APPLY_POST=gw2; local rc=$?
+    t "post-fail: boot continues rc=0"           [ "$rc" = 0 ]
+    t "post-fail: gw2 account+home rolled back"  bash -c '! getent passwd gw2 && [ ! -d /home/gw2 ]'
+    t "post-fail: uid stays reserved (append-only)" bash -c 'grep -q "^gw2 " /var/lib/kd/uidmap'
+    t "post-fail: adm+gw1 survive"               bash -c 'id -u kadm >/dev/null && id -u gw1 >/dev/null'
+    e1_scan
+}
+
 row_fail_admin(){
     prov roster-mixed.json KD_TEST_FAIL_APPLY=kadm; local rc=$?
     t "admin apply-fail: abort rc=4 (E2)"        [ "$rc" = 4 ]
@@ -130,22 +162,28 @@ row_fail_admin(){
     e1_scan
 }
 
-e1_scan(){ # E1: no fixture phrase may appear in ANY provisioner output or readable artifact
+e1_scan(){ # E1: no fixture SECRET may appear in any provisioner output or on-disk artifact.
+    # Scan list covers full phrases, their first-8 VNC derivations (plaintext — the stored
+    # form is DES-obfuscated, so a match means a real leak), the invalid-password value on
+    # the rejection-log path, and the tailnet authkey (a token). Roots span the fs the
+    # provisioner can write (excluding /fixtures, which legitimately holds the values).
     local leak=0 v
     for v in adm-aaaa-0000 gw1-bbbb-1111 gw2-cccc-2222 dup-dddd-3333 sys-eeee-4444 \
-             gw4-ffff-5555 gw5-gggg-6666; do
-        if grep -rqsF "$v" "$OUT" /var/lib/kd /home/*/.ssh 2>/dev/null; then
-            echo "LEAK: a fixture phrase surfaced (which one is withheld)"; leak=1
+             gw4-ffff-5555 gw5-gggg-6666 adm-aaaa gw1-bbbb gw2-cccc \
+             not-the-a13-shape-at-all tskey-fixture-not-a-real-key; do
+        if grep -rqsF "$v" "$OUT" /etc /home /var/lib/kd /var/log /run/kd /srv 2>/dev/null; then
+            echo "LEAK: a fixture secret surfaced (which one is withheld)"; leak=1
         fi
     done
-    t "E1: zero fixture phrases in logs/state" [ "$leak" = 0 ]
+    t "E1: zero fixture secrets in logs/state" [ "$leak" = 0 ]
 }
 
 row="${1:-}"
 case "$row" in
     mixed) row_mixed ;; admin_only) row_admin_only ;; fatals) row_fatals ;;
-    fail_worker) row_fail_worker ;; fail_admin) row_fail_admin ;;
-    *) echo "usage: inner-suite mixed|admin_only|fatals|fail_worker|fail_admin" >&2; exit 2 ;;
+    nulls) row_nulls ;; fail_worker) row_fail_worker ;;
+    fail_worker_post) row_fail_worker_post ;; fail_admin) row_fail_admin ;;
+    *) echo "usage: inner-suite mixed|admin_only|fatals|nulls|fail_worker|fail_worker_post|fail_admin" >&2; exit 2 ;;
 esac
 echo "=== provisioner output (value-free by contract) ==="; cat "$OUT" 2>/dev/null || true
 if [ "$fails" = 0 ]; then echo "ROW PASS: $row"; exit 0; else echo "ROW FAIL: $row ($fails)"; exit 1; fi

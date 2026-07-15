@@ -23,7 +23,7 @@ podman build --isolation=chroot -f shared/tests/Containerfile.test -t "$TAG" . |
 
 fails=0
 ALL_OUT="$(mktemp)"
-for row in mixed admin_only fatals fail_worker fail_admin; do
+for row in mixed admin_only fatals nulls fail_worker fail_worker_post fail_admin; do
     echo "=== row: $row ==="
     if podman run --rm --network=host --pid=host \
             --mount type=tmpfs,destination=/srv \
@@ -37,7 +37,8 @@ done
 # E1 belt at the RUNNER level too: nothing that crossed the container boundary may carry a
 # fixture phrase (the rows scan in-container state; this scans everything they printed).
 for v in adm-aaaa-0000 gw1-bbbb-1111 gw2-cccc-2222 dup-dddd-3333 sys-eeee-4444 \
-         gw4-ffff-5555 gw5-gggg-6666; do
+         gw4-ffff-5555 gw5-gggg-6666 adm-aaaa gw1-bbbb gw2-cccc \
+         not-the-a13-shape-at-all tskey-fixture-not-a-real-key; do
     if grep -qsF "$v" "$ALL_OUT"; then echo "SUITE FAIL: E1 leak across the boundary"; fails=$((fails+1)); fi
 done
 rm -f "$ALL_OUT"

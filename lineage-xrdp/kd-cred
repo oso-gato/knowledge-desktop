@@ -13,7 +13,10 @@ usage(){ echo "usage: kd-cred install|revoke <user>  (install: phrase on stdin)"
 [ $# -eq 2 ] || usage
 verb="$1"; user="$2"
 
-home="$(getent passwd "$user" | cut -d: -f6)"
+# the || guard is load-bearing: under set -e a failing getent would otherwise exit the
+# script uncontrolled (rc 2, no message) before any [ -n ] check ran (review finding)
+home="$(getent passwd "$user" | cut -d: -f6)" \
+    || { echo "kd-cred: no such user (value-free)" >&2; exit 1; }
 [ -n "$home" ] || { echo "kd-cred: no such user (value-free)" >&2; exit 1; }
 
 case "$verb" in

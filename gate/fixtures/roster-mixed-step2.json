@@ -16,7 +16,6 @@
   },
   "workers": [
     { "username": "gw1", "password": "gw1-bbbb-1111",
-      "ssh_authorized_keys": ["ssh-ed25519 AAAAfixtureKEYgw1 fixture@kd"],
       "tiles": ["erebus"] }
   ]
 }
