@@ -1,0 +1,24 @@
+# kd-provision in-box test image (WP-06) — THROWAWAY, never published, never a lineage image.
+# Provenance holds even for a throwaway (N1): pinned Fedora base + class-(a) dnf packages only.
+# Packages are the exact runtime closure kd-provision + the L1 kd-cred drive, plus the
+# suite's own assertion tools:
+#   python3 (the provisioner), shadow-utils (useradd/usermod/chpasswd/groupadd),
+#   tigervnc-server-common (vncpasswd — the leaf that provides it), acl (setfacl, D4),
+#   util-linux (runuser — the umask-proof row acts AS a provisioned user; also the grd
+#   kd-cred path), diffutils (cmp — byte-compares derived credentials; suite-only).
+#   The minimal base ships only util-linux-core and no diffutils — both verified absent
+#   empirically before being added here.
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+        python3 shadow-utils tigervnc-server-common acl util-linux diffutils \
+    && dnf clean all
+
+COPY shared/kd-provision      /usr/libexec/kd/kd-provision
+COPY lineage-xrdp/kd-cred     /usr/libexec/kd/kd-cred
+COPY gate/fixtures/           /fixtures/
+COPY shared/tests/inner-suite.sh /usr/local/bin/inner-suite
+RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred /usr/local/bin/inner-suite
+
+ENTRYPOINT ["/usr/local/bin/inner-suite"]

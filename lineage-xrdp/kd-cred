@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# kd-cred (LINEAGE 1 — XRDP/X11/XFCE) — the per-lineage door-credential installer
+# (DESIGN.md §4/§8; WP-06). Driven ONLY by kd-provision; the ONE phrase arrives on STDIN
+# (E1: never argv, never env), and every door credential on this lineage derives from it:
+#   - Unix shadow (yescrypt via chpasswd) — the xrdp door authenticates via PAM (A6/A12)
+#   - VNC: EXACTLY the first 8 chars -> vncpasswd -f -> ~<user>/.kd/vncpasswd 0600
+#     (A13 truncation rule; canonical path per challenge L1-#8)
+# `revoke <user>` (D5 disable): removes the VNC secret. The OS lock itself is done by
+# kd-provision (lineage-independent); web-door disable is kd-web-sync's (WP-10).
+set -euo pipefail
+
+usage(){ echo "usage: kd-cred install|revoke <user>  (install: phrase on stdin)" >&2; exit 2; }
+[ $# -eq 2 ] || usage
+verb="$1"; user="$2"
+
+home="$(getent passwd "$user" | cut -d: -f6)"
+[ -n "$home" ] || { echo "kd-cred: no such user (value-free)" >&2; exit 1; }
+
+case "$verb" in
+install)
+    IFS= read -r phrase   # the one A13 phrase, stdin only (E1)
+    [ -n "$phrase" ] || { echo "kd-cred: empty phrase on stdin" >&2; exit 1; }
+    # shadow (PAM/xrdp door) — yescrypt per Fedora login.defs
+    printf '%s:%s\n' "$user" "$phrase" | chpasswd
+    # VNC door: first 8 chars of the SAME credential (a derivation, not a second secret)
+    install -d -m 0700 -o "$user" -g "$user" "$home/.kd"
+    printf '%s\n' "${phrase:0:8}" | vncpasswd -f > "$home/.kd/vncpasswd.tmp"
+    chmod 0600 "$home/.kd/vncpasswd.tmp"
+    chown "$user:$user" "$home/.kd/vncpasswd.tmp"
+    mv "$home/.kd/vncpasswd.tmp" "$home/.kd/vncpasswd"
+    ;;
+revoke)
+    rm -f "$home/.kd/vncpasswd"
+    ;;
+*)  usage ;;
+esac

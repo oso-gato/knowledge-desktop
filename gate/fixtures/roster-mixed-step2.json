@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "box": {
+    "tailnet_authkey": "tskey-fixture-not-a-real-key",
+    "endpoints": {
+      "erebus":     { "host": "erebus.tail.fixture", "port": 22, "user": "core" },
+      "fedora-dev": { "host": "fedora-dev.tail.fixture", "port": 22, "user": "core" }
+    },
+    "shared_folder": true
+  },
+  "admin": {
+    "username": "kadm",
+    "password": "adm-aaaa-0000",
+    "ssh_authorized_keys": ["ssh-ed25519 AAAAfixtureKEYadm fixture@kd"],
+    "tiles": ["erebus", "fedora-dev"]
+  },
+  "workers": [
+    { "username": "gw1", "password": "gw1-bbbb-1111",
+      "ssh_authorized_keys": ["ssh-ed25519 AAAAfixtureKEYgw1 fixture@kd"],
+      "tiles": ["erebus"] }
+  ]
+}

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# kd-cred (LINEAGE 2 — GRD/Wayland/GNOME) — the per-lineage door-credential installer
+# (DESIGN.md §4/§8; WP-06). Driven ONLY by kd-provision; the ONE phrase arrives on STDIN
+# (E1: never argv, never env). Door derivations on this lineage:
+#   - Unix shadow (yescrypt via chpasswd) — SSH/console identity (A12)
+#   - grd RDP store: the FULL phrase, via grdctl piped stdin (V17 — the piped-prompt
+#     behaviour is an OPEN empirical item; file-backend write is the designed fallback)
+#   - grd VNC store: EXACTLY the first 8 chars (A13 truncation rule)
+# `revoke <user>` (D5): clears the grd store (challenge US-#11's revoke verb).
+#
+# HONEST TIER NOTE (N5): the grdctl paths below are runtime-provable ONLY at the host gate
+# (systemd-PID-1; the nested dev engine cannot boot this lineage — CLAUDE.md tier split) and
+# land empirically with WP-08 (V17). Until the GRD stack ships in this image, grdctl is
+# absent and those sections SKIP LOUDLY — never a silent false success (N4).
+set -euo pipefail
+
+usage(){ echo "usage: kd-cred install|revoke <user>  (install: phrase on stdin)" >&2; exit 2; }
+[ $# -eq 2 ] || usage
+verb="$1"; user="$2"
+
+getent passwd "$user" >/dev/null || { echo "kd-cred: no such user (value-free)" >&2; exit 1; }
+
+grd_as_user(){ # run grdctl as the target user, args after --; secret rides stdin
+    runuser -u "$user" -- "$@"
+}
+
+case "$verb" in
+install)
+    IFS= read -r phrase   # the one A13 phrase, stdin only (E1)
+    [ -n "$phrase" ] || { echo "kd-cred: empty phrase on stdin" >&2; exit 1; }
+    printf '%s:%s\n' "$user" "$phrase" | chpasswd
+    if command -v grdctl >/dev/null; then
+        # V17: credentials via piped stdin — never argv (E1)
+        printf '%s\n' "$phrase"        | grd_as_user grdctl --headless rdp set-credentials "$user"
+        printf '%s\n' "${phrase:0:8}"  | grd_as_user grdctl --headless vnc set-password
+    else
+        echo "kd-cred: grdctl absent — grd store install SKIPPED (lands WP-08, V17)" >&2
+    fi
+    ;;
+revoke)
+    if command -v grdctl >/dev/null; then
+        grd_as_user grdctl --headless rdp clear-credentials || true
+        grd_as_user grdctl --headless vnc clear-password    || true
+    else
+        echo "kd-cred: grdctl absent — grd store revoke SKIPPED (lands WP-08)" >&2
+    fi
+    ;;
+*)  usage ;;
+esac
