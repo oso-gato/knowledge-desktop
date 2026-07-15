@@ -1,0 +1,72 @@
+# knowledge-desktop WP-10 — web-door BUILDER stage: vendored FreeRDP 3.14.0 + guacd 1.6.0
+# (DESIGN §3 [ADJ-1/2/3]; the shipping build of the #5 spike recipe — closes its residual).
+# Produces an installable /opt/guacamole tree (FreeRDP <3.15 at a private prefix — no clash with
+# the distro freerdp3 grd uses on L2) + the guacd binary + its RDP/VNC/SSH client plugin .so's.
+#
+# Provenance (N1): the two source tarballs are fetched over TLS from their OWN canonical channels
+# (GitHub release archive / Apache dist) and **sha256-verified fail-closed** BEFORE use — the
+# spike's bare ADD is replaced (challenge N1). Pins are ARGs (Principle 6). guacamole-server is
+# absent from Fedora (class-c confirmed, #5 FINDINGS), so this source build is necessary.
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST} AS guac-build
+
+ARG FREERDP_VERSION=3.14.0
+ARG GUACD_VERSION=1.6.0
+# sha256 of the exact upstream tarballs (verified fail-closed below)
+ARG FREERDP_SHA256=a7a979382703c2bc18aa9b22cfa12d7a441b6927ab45ac62ef8353786bc92241
+ARG GUACD_SHA256=8bc45675da96d7b6f39728160181e3d4ff3c08f460f6d26de5805b642bf13f2b
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+        gcc gcc-c++ make cmake autoconf automake libtool pkgconf-pkg-config tar gzip \
+        openssl-devel zlib-devel cjson-devel uriparser-devel fuse3-devel \
+        cairo-devel libjpeg-turbo-devel libpng-devel libuuid-devel \
+        pango-devel libssh2-devel libvncserver-devel libwebsockets-devel \
+        pulseaudio-libs-devel libvorbis-devel libwebp-devel libtool-ltdl-devel \
+    && dnf clean all
+
+# --- vendored FreeRDP into /opt/guacamole (minimal client-only; the exact cmake set #5 proved) ---
+ADD https://github.com/FreeRDP/FreeRDP/archive/refs/tags/${FREERDP_VERSION}.tar.gz /tmp/frdp.tar.gz
+RUN set -eo pipefail; cd /tmp \
+    && echo "${FREERDP_SHA256}  frdp.tar.gz" | sha256sum -c - \
+    && tar xzf frdp.tar.gz && cd FreeRDP-${FREERDP_VERSION} \
+    && cmake -B build -S . \
+        -DCMAKE_INSTALL_PREFIX=/opt/guacamole -DCMAKE_BUILD_TYPE=Release \
+        -DWITH_SERVER=OFF -DWITH_X11=OFF -DWITH_CLIENT_SDL=OFF -DWITH_SAMPLE=OFF \
+        -DBUILD_TESTING=OFF -DWITH_PCSC=OFF -DWITH_CUPS=OFF -DWITH_FFMPEG=OFF \
+        -DWITH_SWSCALE=OFF -DWITH_MANPAGES=OFF -DCHANNEL_URBDRC=OFF -DWITH_KRB5=OFF \
+        -DWITH_OPUS=OFF -DWITH_WEBVIEW=OFF -DWITH_LIBSYSTEMD=OFF \
+    && cmake --build build -j"$(nproc)" && cmake --install build \
+    && test -e /opt/guacamole/lib64/libfreerdp3.so || test -e /opt/guacamole/lib/libfreerdp3.so
+
+# --- guacd 1.6.0 against the vendored FreeRDP (RDP+VNC+SSH plugins; [ADJ-1]) ---
+# guacamole-server 1.6.0's generated config.h sets `_XOPEN_SOURCE 700`; glibc's features.h wants
+# 800 (bumped by _DEFAULT_SOURCE), and guacd builds with its OWN `-Werror`, so the benign
+# feature-test-macro version mismatch is fatal (#5 FINDINGS residual). The proven fix is
+# `-Wno-error` — turn OFF warnings-as-errors for this from-source build of an official release
+# (the redefinition is a glibc-version cosmetic, not a code defect; a scoped source patch to
+# config.h is a recorded follow-up). NOTE (N4): we do NOT pre-define _XOPEN_SOURCE ourselves —
+# that adds a SECOND definition and triggers the redefinition even against config.h's own 700.
+ADD https://archive.apache.org/dist/guacamole/${GUACD_VERSION}/source/guacamole-server-${GUACD_VERSION}.tar.gz /tmp/g.tar.gz
+RUN set -eo pipefail; cd /tmp \
+    && echo "${GUACD_SHA256}  g.tar.gz" | sha256sum -c - \
+    && tar xzf g.tar.gz && cd guacamole-server-${GUACD_VERSION} \
+    && export PKG_CONFIG_PATH=/opt/guacamole/lib64/pkgconfig:/opt/guacamole/lib/pkgconfig \
+    && ./configure --prefix=/opt/guacamole --disable-dependency-tracking \
+        CFLAGS="-Wno-error -DFREERDP_HAS_CONTEXT -DHAVE_FREERDP_VERIFYCERTIFICATEEX -DHAVE_DISCONNECT_CONTEXT -DRDP_INST_HAS_LOAD_CHANNELS -I/opt/guacamole/include/freerdp3 -I/opt/guacamole/include/winpr3" \
+        LDFLAGS="-L/opt/guacamole/lib64 -L/opt/guacamole/lib -Wl,-rpath,/opt/guacamole/lib64:/opt/guacamole/lib" \
+        2>&1 | tee /tmp/cfg.log \
+    && grep -Eq "freerdp[[:space:].]+yes" /tmp/cfg.log \
+    && grep -Eq "^[[:space:]]*RDP[[:space:].]+yes[[:space:]]*$" /tmp/cfg.log \
+    && grep -Eq "^[[:space:]]*VNC[[:space:].]+yes[[:space:]]*$" /tmp/cfg.log \
+    && grep -Eq "^[[:space:]]*SSH[[:space:].]+yes[[:space:]]*$" /tmp/cfg.log \
+    && make -j"$(nproc)" && make install
+
+# Verify in a SEPARATE layer (so a path tweak never re-runs the ~6-min make): the guacd binary,
+# the three client plugins, and that the RDP plugin actually links the VENDORED FreeRDP.
+RUN set -eo pipefail \
+    && { test -x /opt/guacamole/sbin/guacd || test -x /opt/guacamole/bin/guacd; } \
+    && test -e /opt/guacamole/lib/libguac-client-rdp.so \
+    && test -e /opt/guacamole/lib/libguac-client-vnc.so \
+    && test -e /opt/guacamole/lib/libguac-client-ssh.so \
+    && ldd /opt/guacamole/lib/libguac-client-rdp.so | grep -q '/opt/guacamole/lib.*freerdp' \
+    && echo "GUACD-BUILT: guacd + RDP/VNC/SSH plugins built and linked to vendored FreeRDP 3.14"
