@@ -12,5 +12,12 @@ FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
 # (per-user lingering user managers, DESIGN §2) and GNOME/GRD needs D-Bus regardless (WP-08+).
 RUN dnf -y --setopt=install_weak_deps=False install systemd dbus-broker && dnf clean all
 
+# WP-06: kd-provision core — shipped INERT (the unit is NOT enabled, so skeleton boot/gate
+# are unchanged); WP-08 enables it with the GRD stack + python3 (see kd-provision.service).
+COPY shared/kd-provision              /usr/libexec/kd/kd-provision
+COPY lineage-grd/kd-cred              /usr/libexec/kd/kd-cred
+COPY lineage-grd/kd-provision.service /usr/lib/systemd/system/kd-provision.service
+RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred
+
 ENTRYPOINT ["/sbin/init"]
 STOPSIGNAL SIGRTMIN+3

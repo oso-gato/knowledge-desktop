@@ -1,0 +1,19 @@
+# kd-provision.service (LINEAGE 2 — systemd PID 1) — boot-time roster apply (DESIGN §4).
+# [ADJ-13]: FailureAction=exit-force makes a required-secret failure exit the CONTAINER
+# nonzero within seconds — the E2 fail-fast observable the gate asserts (challenge US-#7).
+#
+# SHIPPED-NOT-ENABLED by WP-06 (honest wiring status, N4): enabling this before the gate
+# harness (WP-02) supplies roster fixtures would fail every skeleton boot. WP-08 enables it
+# (multi-user.target wants) as part of the L2 walking skeleton, when the boot chain lands.
+[Unit]
+Description=kd-provision — roster-driven user/credential provisioning (sole roster parser)
+Before=multi-user.target
+ConditionPathExists=!/run/kd/provision-complete
+FailureAction=exit-force
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/kd/kd-provision
+StandardOutput=journal
+StandardError=journal

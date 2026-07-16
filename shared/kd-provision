@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""kd-provision — the SOLE roster parser (DESIGN.md §4, [ADJ-11]; WP-06 core).
+
+One JSON roster (podman secret -> /run/secrets/kd-roster) drives everything. This program is
+the ONLY component that parses it; every consumer (per-lineage door credential installer,
+session enablement, web sync, grants) is driven from here through a narrow interface.
+
+Contract (WP-06):
+  - Closed-schema validation, D6 severity split: any defect in the roster envelope, `box`,
+    or `admin` block is FATAL (exit nonzero, fail-fast, E2); a defective WORKER entry is
+    EXCLUDED with a value-free log line and boot continues.
+  - Append-only uidmap (E3): /var/lib/kd/uidmap maps username -> uid, allocated once from
+    KD_UID_BASE upward and NEVER reused or rewritten - a user keeps their uid across roster
+    edits, disables, reinstatements, and container recreations (state volume).
+  - Two-pass apply (challenge US-#10): pass 1 derives ALL users' credentials (stdin
+    discipline - no secret ever in argv or env of another uid); only then does pass 2 enable
+    any session/linger machinery (lineage hook, lands WP-07/WP-08).
+  - Disable-not-delete (D5): a uidmap user absent from the roster is disabled - OS lock +
+    door-credential revoke (per-lineage `kd-cred revoke`) + grants removal; home preserved.
+  - D4 shared folder: /srv/shared 2770 root:kd-share + default group ACL when
+    box.shared_folder is true.
+  - Grants (A10): /var/lib/kd/grants/<user>, 0640 root:kd-door, exact-match fail-closed,
+    regenerated every run.
+  - Apply-failure policy (challenge US-#14): a worker's apply failure rolls back that user
+    (this-run creations only) and boot continues; an admin apply failure aborts nonzero.
+  - E1 (re-scoped per DESIGN §4): no SECRET value — password, token, key, authkey — is ever
+    printed, placed in argv, or exported to any environment; secrets travel exclusively via
+    subprocess stdin. Validation errors name the FIELD PATH and the RULE violated, never the
+    content. DISCLOSED residuals: usernames (roster values, but identities rather than
+    secrets) appear in provisioning logs by design; an unknown-KEY rejection echoes the
+    offending key NAMES (a secret pasted into key position would surface — operator error
+    class, E6-disclosable).
+
+Interfaces this drives (installed per lineage; each optional hook is loudly logged when
+absent so a missing consumer is visible, never silent):
+  /usr/libexec/kd/kd-cred install|revoke <user>   REQUIRED  phrase on stdin (install)
+  /usr/libexec/kd/kd-session-enable <user>        optional  pass-2 hook (WP-07/WP-08)
+  /usr/libexec/kd/kd-web-sync <verb> <user>       optional  web door sync (WP-10)
+
+Exit codes: 0 provisioned (excluded workers, if any, are logged) · 2 roster invalid (fatal
+validation; uid-range exhaustion included) · 3 roster missing, unreadable, or not parseable
+as JSON (E2 fail-fast) · 4 admin apply failure (abort).
+
+Wiring status (honest, N4): shipped into both lineage images by WP-06 but not yet invoked at
+boot - the boot chain (entrypoint/systemd unit enablement) and the E2 fail-fast-on-absent-
+secret observable land with WP-07 (L1) / WP-08 (L2), once the gate harness (WP-02) supplies
+roster fixtures. Until then this is proven by the in-box suite shared/tests/.
+
+Test seams (used only by shared/tests/; harmless in production):
+  KD_ROSTER / KD_STATE / KD_RUN / KD_LIBEXEC   path overrides
+  KD_TEST_FAIL_APPLY=<user>        injects an apply failure BEFORE account creation
+  KD_TEST_FAIL_APPLY_POST=<user>   injects one AFTER creation (exercises real rollback)
+"""
+
+import json
+import os
+import pwd
+import grp
+import re
+import subprocess
+import sys
+
+ROSTER = os.environ.get("KD_ROSTER", "/run/secrets/kd-roster")
+STATE = os.environ.get("KD_STATE", "/var/lib/kd")
+RUN = os.environ.get("KD_RUN", "/run/kd")
+LIBEXEC = os.environ.get("KD_LIBEXEC", "/usr/libexec/kd")
+UID_BASE = 2000
+UID_MAX = 60000  # stay clear of nested-podman subuid bands (DESIGN §5)
+
+PASS_RE = re.compile(r"[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{4}")  # A13: xxx-xxxx-xxxx
+USER_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+GROUPS = ("kd-users", "kd-door", "kd-share")
+
+USER_KEYS = {"username", "password", "ssh_authorized_keys", "tile_ssh_key", "vcs", "tiles"}
+USER_REQUIRED = {"username", "password"}
+VCS_KEYS = {"provider", "login", "token", "git_name", "git_email"}
+BOX_KEYS = {"tailnet_authkey", "public_dns_name", "vault_repo", "endpoints", "shared_folder"}
+EP_KEYS = {"host", "port", "user"}
+TOP_KEYS = {"version", "box", "admin", "workers"}
+
+
+def log(msg):
+    print(f"kd-provision: {msg}", flush=True)
+
+
+def die(code, msg):
+    log(f"FATAL: {msg}")
+    sys.exit(code)
+
+
+def run(argv, stdin_data=None, check=True):
+    """Run a command; secrets travel ONLY via stdin_data (E1 - never argv, never env)."""
+    return subprocess.run(
+        argv, input=stdin_data, text=True, check=check,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+
+
+# ---------------------------------------------------------------- validation (value-free)
+
+def check_user_block(u, path, endpoint_names):
+    """Validate one user block. Returns a list of value-free defect strings (empty = valid)."""
+    errs = []
+    if not isinstance(u, dict):
+        return [f"{path}: not an object"]
+    unknown = set(u) - USER_KEYS
+    if unknown:
+        errs.append(f"{path}: unknown key(s) {sorted(unknown)} (closed schema, D6)")
+    # a JSON null anywhere in a user block is a defect, never "absent" — without this, a
+    # null username/password sailed through the None-guarded shape checks below and blew
+    # up the whole boot as an uncaught TypeError (independent-review finding, D6 inverted)
+    for k, v in u.items():
+        if v is None:
+            errs.append(f"{path}.{k}: null value (closed schema, D6)")
+    if errs:
+        return errs
+    for k in USER_REQUIRED:
+        if k not in u:
+            errs.append(f"{path}.{k}: required key missing")
+    name = u.get("username")
+    if name is not None:
+        if not isinstance(name, str) or not USER_RE.fullmatch(name):
+            errs.append(f"{path}.username: fails the username rule (^[a-z][a-z0-9-]{{0,31}}$)")
+        elif name in GROUPS:
+            errs.append(f"{path}.username: collides with a kd system group")
+    pw = u.get("password")
+    if pw is not None and (not isinstance(pw, str) or not PASS_RE.fullmatch(pw)):
+        errs.append(f"{path}.password: fails the A13 shape (xxx-xxxx-xxxx, [a-z0-9])")
+    keys = u.get("ssh_authorized_keys")
+    if keys is not None:
+        if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+            errs.append(f"{path}.ssh_authorized_keys: not a list of strings")
+        elif any(("\n" in k or not k.strip()) for k in keys):
+            errs.append(f"{path}.ssh_authorized_keys: entry empty or multi-line")
+    tk = u.get("tile_ssh_key")
+    if tk is not None and (not isinstance(tk, str) or "-----BEGIN" not in tk):
+        errs.append(f"{path}.tile_ssh_key: not a private key block")
+    vcs = u.get("vcs")
+    if vcs is not None:
+        if not isinstance(vcs, dict) or set(vcs) != VCS_KEYS:
+            errs.append(f"{path}.vcs: must carry exactly {sorted(VCS_KEYS)}")
+        elif not all(isinstance(v, str) and v for v in vcs.values()):
+            errs.append(f"{path}.vcs: empty or non-string value")
+    tiles = u.get("tiles")
+    if tiles is not None:
+        if not isinstance(tiles, list) or not all(isinstance(t, str) for t in tiles):
+            errs.append(f"{path}.tiles: not a list of strings")
+        else:
+            for t in tiles:
+                if t not in endpoint_names:
+                    errs.append(f"{path}.tiles: names an endpoint not in box.endpoints "
+                                f"(exact-match fail-closed, A10)")
+                    break
+    return errs
+
+
+def system_collision(name, uidmap):
+    """True when `name` already exists on the system but is NOT kd-managed."""
+    if name in uidmap:
+        return False
+    try:
+        pwd.getpwnam(name)
+        return True
+    except KeyError:
+        pass
+    try:
+        gr = grp.getgrnam(name)
+        # a foreign group with this name breaks useradd's per-user group (-U)
+        return gr.gr_name not in uidmap
+    except KeyError:
+        return False
+
+
+def validate(roster, uidmap):
+    """Full closed-schema validation.
+
+    Returns (users, excluded_count): `users` = admin-first list of valid user dicts.
+    FATAL defects (envelope/box/admin) exit here. Worker defects log + exclude.
+    """
+    if not isinstance(roster, dict):
+        die(2, "roster: not a JSON object")
+    unknown = set(roster) - TOP_KEYS
+    if unknown:
+        die(2, f"roster: unknown top-level key(s) {sorted(unknown)} (closed schema, D6)")
+    if type(roster.get("version")) is not int or roster.get("version") != 1:
+        die(2, "roster.version: must be the integer 1")  # bool-strict: True == 1 must not pass
+
+    box = roster.get("box")
+    if not isinstance(box, dict):
+        die(2, "roster.box: required object missing")
+    unknown = set(box) - BOX_KEYS
+    if unknown:
+        die(2, f"roster.box: unknown key(s) {sorted(unknown)} (closed schema, D6)")
+    key = box.get("tailnet_authkey")
+    if not isinstance(key, str) or not key:
+        die(2, "roster.box.tailnet_authkey: REQUIRED and non-empty (E2 fail-fast)")
+    for opt in ("public_dns_name", "vault_repo"):
+        if opt in box and (not isinstance(box[opt], str) or not box[opt]):
+            die(2, f"roster.box.{opt}: not a non-empty string")
+    if "shared_folder" in box and not isinstance(box["shared_folder"], bool):
+        die(2, "roster.box.shared_folder: not a boolean")
+    endpoints = box.get("endpoints", {})
+    if not isinstance(endpoints, dict):
+        die(2, "roster.box.endpoints: not an object")
+    for name, ep in endpoints.items():
+        if not USER_RE.fullmatch(name):
+            die(2, "roster.box.endpoints: an endpoint name fails the name rule")
+        if not isinstance(ep, dict) or set(ep) != EP_KEYS:
+            die(2, f"roster.box.endpoints.{name}: must carry exactly {sorted(EP_KEYS)}")
+        if not isinstance(ep["host"], str) or not ep["host"]:
+            die(2, f"roster.box.endpoints.{name}.host: not a non-empty string")
+        if type(ep["port"]) is not int or not 0 < ep["port"] < 65536:  # bool-strict
+            die(2, f"roster.box.endpoints.{name}.port: not a valid port number")
+        if not isinstance(ep["user"], str) or not ep["user"]:
+            die(2, f"roster.box.endpoints.{name}.user: not a non-empty string")
+    ep_names = set(endpoints)
+
+    admin = roster.get("admin")
+    if not isinstance(admin, dict):
+        die(2, "roster.admin: required object missing (D1: the admin is always present)")
+    admin_errs = check_user_block(admin, "roster.admin", ep_names)
+    if admin_errs:
+        for e in admin_errs:
+            log(f"FATAL: {e}")
+        sys.exit(2)
+    if system_collision(admin["username"], uidmap):
+        die(2, "roster.admin.username: collides with an existing non-kd system account/group")
+
+    workers = roster.get("workers", [])
+    if not isinstance(workers, list):
+        die(2, "roster.workers: not a list")
+
+    users = [dict(admin, _role="admin")]
+    seen = {admin["username"]}
+    excluded = 0
+    for i, w in enumerate(workers):
+        path = f"roster.workers[{i}]"
+        errs = check_user_block(w, path, ep_names)
+        name = w.get("username") if isinstance(w, dict) else None
+        if not errs and name in seen:
+            errs = [f"{path}.username: duplicate of an earlier roster entry"]
+        if not errs and system_collision(name, uidmap):
+            errs = [f"{path}.username: collides with an existing non-kd system account/group"]
+        if errs:
+            for e in errs:
+                log(f"worker excluded (D6): {e}")
+            excluded += 1
+            continue
+        seen.add(name)
+        users.append(dict(w, _role="worker"))
+    return users, excluded, endpoints, bool(box.get("shared_folder", False))
+
+
+# ---------------------------------------------------------------------- uidmap (append-only)
+
+def load_uidmap():
+    path = os.path.join(STATE, "uidmap")
+    uidmap = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name, _, uid = line.partition(" ")
+                uidmap[name] = int(uid)
+    return uidmap
+
+
+def allocate_uid(name, uidmap):
+    """Return the user's uid, allocating + appending a new one if unseen. NEVER reuses."""
+    if name in uidmap:
+        return uidmap[name]
+    uid = max([UID_BASE - 1] + list(uidmap.values())) + 1
+    while uid <= UID_MAX:
+        try:
+            pwd.getpwuid(uid)  # skip uids held by non-kd accounts
+            uid += 1
+        except KeyError:
+            break
+    if uid > UID_MAX:
+        die(2, "uidmap: uid range exhausted")
+    with open(os.path.join(STATE, "uidmap"), "a", encoding="utf-8") as f:
+        f.write(f"{name} {uid}\n")
+        f.flush()
+        os.fsync(f.fileno())
+    uidmap[name] = uid
+    return uid
+
+
+# --------------------------------------------------------------------------- apply helpers
+
+def gid_of(group):
+    return grp.getgrnam(group).gr_gid
+
+
+def hook(name):
+    """Path of an optional consumer hook, or None (loudly logged by callers)."""
+    p = os.path.join(LIBEXEC, name)
+    return p if os.access(p, os.X_OK) else None
+
+
+def account_exists(name):
+    try:
+        return pwd.getpwnam(name)
+    except KeyError:
+        return None
+
+
+def apply_user(u, uid, created):
+    """Pass-1 apply for one valid user. Secrets ride stdin only (E1)."""
+    name = u["username"]
+    if os.environ.get("KD_TEST_FAIL_APPLY") == name:
+        raise RuntimeError("injected apply failure (KD_TEST_FAIL_APPLY test seam)")
+    pw_ent = account_exists(name)
+    if pw_ent is None:
+        run(["useradd", "-m", "-u", str(uid), "-U", "-G", "kd-users", "-s", "/bin/bash", name])
+        created.append(name)
+        pw_ent = pwd.getpwnam(name)
+    else:
+        run(["usermod", "-U", name], check=False)  # reinstatement (D5): unlock
+    home = pw_ent.pw_dir
+    if os.environ.get("KD_TEST_FAIL_APPLY_POST") == name:
+        # second injection point AFTER account creation, so the rollback path (userdel -r)
+        # is exercised for real, not just the pre-creation skip (review coverage note)
+        raise RuntimeError("injected post-creation apply failure (KD_TEST_FAIL_APPLY_POST)")
+
+    # door credentials — one phrase, per-lineage derivations, stdin only (A13/E1)
+    cred = hook("kd-cred")
+    if cred is None:
+        raise RuntimeError("kd-cred installer missing from the image (REQUIRED interface)")
+    run([cred, "install", name], stdin_data=u["password"] + "\n")
+
+    # ssh authorized_keys (roster-supplied account material; the sshd door itself is WP-13).
+    # Reconciled BOTH ways: an emptied/removed roster key list REMOVES the file — key
+    # revocation for a still-active user must land at next boot, never fail open
+    # (independent-review finding; SECRETS.md rotation contract / D5)
+    keys = u.get("ssh_authorized_keys") or []
+    sshd = os.path.join(home, ".ssh")
+    ak = os.path.join(sshd, "authorized_keys")
+    if keys:
+        os.makedirs(sshd, mode=0o700, exist_ok=True)
+        with open(ak, "w", encoding="utf-8") as f:
+            f.write("\n".join(keys) + "\n")
+        os.chmod(ak, 0o600)
+        os.chown(ak, uid, pw_ent.pw_gid)
+        os.chown(sshd, uid, pw_ent.pw_gid)
+    elif os.path.exists(ak):
+        os.unlink(ak)
+
+    # web door sync (WP-10 consumer; optional hook until it lands)
+    ws = hook("kd-web-sync")
+    if ws:
+        run([ws, "apply-user", name], stdin_data=u["password"] + "\n")
+    else:
+        log(f"hook absent (lands WP-10): kd-web-sync — web identity for {name} not synced")
+
+
+def write_grants(u, endpoints):
+    """Grants file: 0640 root:kd-door, exact-match fail-closed, regenerated each run (A10)."""
+    name = u["username"]
+    path = os.path.join(STATE, "grants", name)
+    tiles = u.get("tiles") or []
+    if not tiles:
+        if os.path.exists(path):
+            os.unlink(path)
+        return
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for t in sorted(tiles):
+            ep = endpoints[t]
+            f.write(f"{t} {ep['host']} {ep['port']} {ep['user']}\n")
+    os.chmod(tmp, 0o640)
+    os.chown(tmp, 0, gid_of("kd-door"))
+    os.replace(tmp, path)
+
+
+def rollback_user(name, created):
+    """US-#14: full rollback of a failed worker — this-run creations only."""
+    if name in created:
+        run(["userdel", "-r", name], check=False)
+    g = os.path.join(STATE, "grants", name)
+    if os.path.exists(g):
+        os.unlink(g)
+
+
+def disable_user(name):
+    """D5 disable-not-delete: OS lock + door-credential revoke + grants removal; home kept.
+
+    Returns True only when a real account was disabled (so the summary count is truthful —
+    a rolled-back worker with no account is not "disabled")."""
+    if account_exists(name) is None:
+        return False
+    run(["usermod", "-L", name], check=False)
+    cred = hook("kd-cred")
+    if cred:
+        run([cred, "revoke", name], check=False)
+    g = os.path.join(STATE, "grants", name)
+    if os.path.exists(g):
+        os.unlink(g)
+    ws = hook("kd-web-sync")
+    if ws:
+        run([ws, "disable-user", name], check=False)  # preserves TOTP rows (D5 keystone)
+    else:
+        log(f"hook absent (lands WP-10): kd-web-sync — web identity for {name} not disabled")
+    log(f"disabled (D5, home preserved): {name}")
+    return True
+
+
+def shared_folder(users):
+    """D4: /srv/shared 2770 root:kd-share + default group ACL (umask-proof collaboration)."""
+    os.makedirs("/srv/shared", exist_ok=True)
+    os.chown("/srv/shared", 0, gid_of("kd-share"))
+    os.chmod("/srv/shared", 0o2770)
+    for u in users:
+        run(["usermod", "-aG", "kd-share", u["username"]])
+    # default ACL so group rw survives any file-creation umask; the explicit-chmod edge is
+    # a disclosed E6 residual (an app that chmods 0600 defeats any default ACL)
+    run(["setfacl", "-m", "d:g:kd-share:rwX", "-m", "g:kd-share:rwX", "/srv/shared"])
+
+
+# ------------------------------------------------------------------------------------ main
+
+def main():
+    if not os.path.exists(ROSTER):
+        die(3, f"roster secret absent at {ROSTER} (E2: missing required secret => fail-fast)")
+    try:
+        with open(ROSTER, encoding="utf-8") as f:
+            roster = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        die(3, "roster unreadable or not valid JSON (value withheld, E1)")
+
+    os.makedirs(STATE, exist_ok=True)
+    os.makedirs(RUN, exist_ok=True)
+    for g in GROUPS:
+        run(["groupadd", "-f", g])
+    grants_dir = os.path.join(STATE, "grants")
+    os.makedirs(grants_dir, exist_ok=True)
+    os.chmod(grants_dir, 0o750)
+    os.chown(grants_dir, 0, gid_of("kd-door"))
+
+    uidmap = load_uidmap()
+    users, excluded, endpoints, want_shared = validate(roster, uidmap)
+
+    # ---- pass 1: accounts + ALL credentials (US-#10: before any session enablement) ----
+    applied = []
+    created = []
+    for u in users:
+        name = u["username"]
+        uid = allocate_uid(name, uidmap)
+        try:
+            apply_user(u, uid, created)
+            write_grants(u, endpoints)
+            applied.append(u)
+        except Exception as exc:  # noqa: BLE001 — ANY single-user failure must honor US-#14:
+            # rollback that user, never abort the boot on a worker (and never let an
+            # unhandled traceback print, which could carry roster-adjacent content — E1).
+            # Only the exception TYPE is logged; messages may embed values.
+            if u["_role"] == "admin":
+                rollback_user(name, created)
+                die(4, f"admin apply failed ({type(exc).__name__}) => abort "
+                       f"(E2; policy US-#14)")
+            log(f"worker apply failed ({type(exc).__name__}) => rolled back + skipped "
+                f"(policy US-#14): {name}")
+            rollback_user(name, created)
+
+    # ---- disable pass (D5): kd-managed users no longer in the roster ----
+    active = {u["username"] for u in applied}
+    disabled = 0
+    for name in sorted(uidmap):
+        if name not in active:
+            disabled += 1 if disable_user(name) else 0
+
+    if want_shared:
+        shared_folder(applied)
+
+    # ---- pass 2: session/linger enablement (WP-07/WP-08 hook) ----
+    se = hook("kd-session-enable")
+    for u in applied:
+        if se:
+            run([se, u["username"]])
+        else:
+            log(f"hook absent (lands WP-07/WP-08): kd-session-enable — "
+                f"no session prestart for {u['username']}")
+
+    with open(os.path.join(RUN, "provision-complete"), "w", encoding="utf-8") as f:
+        f.write("ok\n")
+    log(f"provisioned: {len(applied)} user(s), {excluded} worker(s) excluded, "
+        f"{disabled} disabled")
+
+
+if __name__ == "__main__":
+    main()

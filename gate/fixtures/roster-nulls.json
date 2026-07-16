@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "box": { "tailnet_authkey": "tskey-fixture-not-a-real-key" },
+  "admin": { "username": "kadm", "password": "adm-aaaa-0000" },
+  "workers": [
+    { "username": "gw1", "password": "gw1-bbbb-1111" },
+    { "username": "gwn1", "password": null },
+    { "username": null, "password": "gw2-cccc-2222" }
+  ]
+}

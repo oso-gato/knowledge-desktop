@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "surprise": {},
+  "box": { "tailnet_authkey": "tskey-fixture-not-a-real-key" },
+  "admin": { "username": "kadm", "password": "adm-aaaa-0000" }
+}
