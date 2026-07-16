@@ -69,6 +69,14 @@ KD_PRESTART="${KD_PRESTART:-1}" /usr/libexec/kd/kd-provision || exit $?
 touch /run/kd/boot-ok
 echo "kd-entrypoint: L1 up (WP-07) — sesman=$SESMAN_PID xrdp=$XRDP_PID"
 
+# vault (E4, WP-17): the L1 periodic sync driver. L1 is bash-PID-1 with no systemd --user, so the
+# 5-min vault cadence is an entrypoint-supervised loop (the L2 mechanism is a per-user timer, WP-08).
+# Fail-safe: the driver's per-user syncs are individually guarded (stop-flag/vault-ready/delete
+# bounds); a driver crash is restarted below (F2). It self-idles when no user has a ~/Vault clone.
+echo "kd-entrypoint: starting kd-vault-driver (E4)"
+/usr/libexec/kd/kd-vault-driver &
+pids+=($!); VAULT_PID=$!
+
 # supervise (F2 self-heal): restart a dead core daemon; kd-health independently reports truth.
 # xrdp's listener can outlive a SIGKILL briefly; wait for :3389 to free before rebind so the
 # restart doesn't fail EADDRINUSE (the container-level HealthOnFailure=kill is the outer layer).
@@ -89,5 +97,9 @@ while :; do
     if ! kill -0 "$SSHD_PID" 2>/dev/null; then
         echo "kd-entrypoint: sshd died — restarting (F2)"
         /usr/sbin/sshd -D & SSHD_PID=$!; pids+=($!)
+    fi
+    if ! kill -0 "$VAULT_PID" 2>/dev/null; then
+        echo "kd-entrypoint: kd-vault-driver died — restarting (F2)"
+        /usr/libexec/kd/kd-vault-driver & VAULT_PID=$!; pids+=($!)
     fi
 done

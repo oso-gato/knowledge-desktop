@@ -38,9 +38,13 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         python3 shadow-utils tigervnc-server-common tigervnc-x11-server \
         acl procps-ng glibc-langpack-en \
         openssh-server mosh tmux \
+        git-core \
     && dnf clean all
 # WP-13 (A8 terminal door): openssh-server (key-only, config below) + mosh (roaming UDP) + tmux
-# (the one persistent per-user session). git-core arrives with the toolset (WP-15).
+# (the one persistent per-user session).
+# WP-17 (E4 vault): git-core — the per-user ~/Vault git clone + the guarded 5-min sync cycle
+# (kd-vault-sync/init/driver) run git. Named EXPLICITLY here (class-(a), weak deps off): the WP-15
+# toolset layer installs no git, so it must not be assumed as an incidental dependency (N2).
 
 # A8 door config: key-only least-privilege sshd + the tmux auto-attach profile (ssh AND mosh).
 COPY lineage-xrdp/sshd-kd.conf /etc/ssh/sshd_config.d/10-kd.conf
@@ -129,6 +133,10 @@ COPY lineage-xrdp/xorg.conf         /etc/X11/xrdp/xorg.conf
 COPY shared/entrypoint-l1.sh        /usr/local/bin/kd-entrypoint
 COPY shared/kd-health               /usr/local/bin/kd-health
 COPY shared/kd-provision            /usr/libexec/kd/kd-provision
+COPY shared/kd-vault-sync           /usr/libexec/kd/kd-vault-sync
+COPY shared/kd-vault-init           /usr/libexec/kd/kd-vault-init
+COPY shared/kd-vault-driver         /usr/libexec/kd/kd-vault-driver
+COPY shared/kd-vault-gitignore      /usr/libexec/kd/kd-vault-gitignore
 COPY lineage-xrdp/kd-cred           /usr/libexec/kd/kd-cred
 COPY lineage-xrdp/kd-session-enable /usr/libexec/kd/kd-session-enable
 COPY lineage-xrdp/startwm-kd        /usr/libexec/kd/startwm-kd
@@ -138,6 +146,8 @@ COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
 RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
         /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
-        /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check
+        /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check \
+        /usr/libexec/kd/kd-vault-sync /usr/libexec/kd/kd-vault-init /usr/libexec/kd/kd-vault-driver \
+    && chmod 0644 /usr/libexec/kd/kd-vault-gitignore
 
 ENTRYPOINT ["/usr/local/bin/kd-entrypoint"]

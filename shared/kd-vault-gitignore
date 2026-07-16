@@ -1,0 +1,14 @@
+# === knowledge-desktop vault — per-device volatile state (E4; appended by kd-vault-init) ===
+# These files are LOCAL to one device/session and must never sync between a user's devices —
+# syncing them causes spurious conflicts and churn (challenge VST-#15). Content notes DO sync.
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/workspace
+.obsidian/cache
+.obsidian/.DS_Store
+.obsidian/plugins/*/data.json.tmp
+.trash/
+.DS_Store
+Thumbs.db
+*.tmp
+*~
