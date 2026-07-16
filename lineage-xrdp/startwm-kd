@@ -3,7 +3,8 @@
 # Provides the session bus at the DESIGNED well-known path ($XDG_RUNTIME_DIR/bus — challenge
 # VST-#7: consumers like the notification daemon and future sync tooling must find ONE bus at
 # ONE address, never a private random dbus-run-session address), belts the no-blank rule
-# (L1-#7: xset here + the xorg.conf ServerFlags), then execs the XFCE session.
+# (L1-#7: xset here + the xorg.conf ServerFlags), launches the in-session doors-agent (WP-09
+# VNC endpoint), then runs the XFCE session — cleaning up the agent when the session exits.
 #
 # HONEST NOTE (design reconcile, recorded in the WP-07 PR): DESIGN §1 words the bus as "the
 # systemd user bus", but this lineage is deliberately bash-PID-1 (.live-gate v0) — there is no
@@ -26,4 +27,13 @@ fi
 # no-blank belt (server side is xorg.conf ServerFlags; both halves per L1-#7)
 xset s off -dpms || true
 
-exec xfce4-session
+# doors-agent (WP-09): the in-session door supervisor (VNC endpoint now; more doors later). Run
+# it as a supervised background job tied to THIS session — NOT exec'd — so when the desktop exits
+# we SIGTERM it, never leaking an orphan that busy-restarts against a dead display.
+/usr/libexec/kd/doors-agent &
+DOORS_PID=$!
+
+xfce4-session
+rc=$?
+kill "$DOORS_PID" 2>/dev/null || true
+exit "$rc"

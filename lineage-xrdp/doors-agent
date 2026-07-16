@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# doors-agent (LINEAGE 1; DESIGN §1/§21, WP-09) — the in-session door supervisor that
+# startwm-kd launches AS THE USER, alongside the desktop. WP-09 door = the VNC endpoint:
+# x0vncserver attached to THIS session's Xorg, loopback-only (-localhost), rfbport 5900+N,
+# -AlwaysShared (true web + native-VNC + native-RDP concurrency; avoids xrdp's RDP×2 takeover,
+# DESIGN §53), -AcceptSetDesktopSize (C4 geometry resize), VncAuth against ~/.kd/vncpasswd (the
+# A13 first-8 derivation kd-cred installed). A11: this ATTACHES to the ONE prestarted session,
+# never forks a second.
+#
+# DEFERRED (honest, N4/N5):
+#   * the TAILNET native-VNC listener (§21 "adds the tailnet listener when the iface appears")
+#     rides the tailnet WP — no tailnet iface exists yet; the loopback endpoint is what §21
+#     fixes as "immediate".
+#   * the cross-container web-tile reach (guacd → this endpoint) is WP-11.
+#   * the live RFB round-trip + V8 truncation semantics are proven at the host gate with a real
+#     roster (WP-02 fixtures) — the nested dev engine cannot run an isolated X session, and the
+#     skeleton-mode gate has no sessions to attach to.
+set -u
+log(){ echo "doors-agent: $*"; }
+
+: "${DISPLAY:?doors-agent: no DISPLAY (must run inside the session)}"
+n="${DISPLAY#*:}"; n="${n%%.*}"                 # :N[.screen] -> N
+case "$n" in ''|*[!0-9]*) log "unparseable DISPLAY='$DISPLAY' — no VNC door"; exit 1;; esac
+rfbport=$((5900 + n))
+PW="$HOME/.kd/vncpasswd"
+
+# No credential -> nothing to serve (an unprovisioned/skeleton session). Exit cleanly; kd-health
+# only asserts the VNC door once a roster provisioned sessions (skeleton mode skips it).
+if [ ! -s "$PW" ]; then
+    log "no VNC password file at $PW — VNC door not started (session unprovisioned); idle-exit"
+    exit 0
+fi
+
+start_vnc(){
+    x0vncserver -display "$DISPLAY" -rfbport "$rfbport" -localhost \
+        -SecurityTypes VncAuth -PasswordFile "$PW" \
+        -AlwaysShared -AcceptSetDesktopSize >/dev/null 2>&1 &
+    VNC_PID=$!
+}
+
+log "starting VNC door: x0vncserver $DISPLAY -> 127.0.0.1:$rfbport (loopback, AlwaysShared)"
+start_vnc
+
+# supervise (F2): restart a dead endpoint while the session lives. If the display itself is gone
+# (Xorg died = session ended), x0vncserver exits immediately on every attempt; the 10s cadence
+# bounds the retry, and startwm-kd SIGTERMs this agent on session exit so it never busy-loops as
+# an orphan.
+term(){ kill "$VNC_PID" 2>/dev/null || true; exit 0; }
+trap term TERM INT
+while :; do
+    sleep 10 & wait $! || true
+    kill -0 "$VNC_PID" 2>/dev/null || { log "x0vncserver died — restart (F2)"; start_vnc; }
+done
