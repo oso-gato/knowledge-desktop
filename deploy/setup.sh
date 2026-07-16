@@ -49,20 +49,37 @@ echo "== create the roster secret (E1; replace if present) =="
 podman secret create --replace kd-roster "$ROSTER" >/dev/null
 echo "  kd-roster created from $ROSTER"
 
-echo "== install quadlets for lineage: $LINEAGE =="
+# [ADJ-34]: a lineage deploys as a PAIR — the desktop unit (netns owner, publishes the web port)
+# + its netns-joined web-door sidecar. The L2 sidecar (kd-web-grd) lands with the WP-08 stack, so
+# grd installs desktop-only until then (loud below, never silent).
+UNITS="kd-$LINEAGE"
+if [ -f "$SRC/kd-web-$LINEAGE.container" ]; then
+  UNITS="kd-$LINEAGE kd-web-$LINEAGE"
+else
+  echo "NOTE: no web-door sidecar for lineage '$LINEAGE' yet (kd-web-$LINEAGE.container absent —" \
+       "lands with WP-08); installing the desktop unit only."
+fi
+
+echo "== install quadlets for lineage: $LINEAGE ($UNITS) =="
 mkdir -p "$UNIT_DIR"
-install -m 0644 "$SRC/kd-$LINEAGE.container" "$UNIT_DIR/"
-install -m 0644 "$SRC/kd-$LINEAGE.network"   "$UNIT_DIR/"
+for u in $UNITS; do install -m 0644 "$SRC/$u.container" "$UNIT_DIR/"; done
+install -m 0644 "$SRC/kd-$LINEAGE.network" "$UNIT_DIR/"
 systemctl --user daemon-reload
 
-echo "== start kd-$LINEAGE =="
-systemctl --user start "kd-$LINEAGE.service"
+echo "== start $UNITS =="
+# starting the sidecar pulls in the netns owner via its BindsTo/After; start both explicitly
+# so a desktop-only lineage also starts.
+for u in $UNITS; do systemctl --user start "$u.service"; done
 
-echo "== wait for healthy (Notify=healthy gates this; budget 180s) =="
-for _ in $(seq 1 36); do
-  st="$(systemctl --user show -p SubState --value "kd-$LINEAGE.service" 2>/dev/null || echo unknown)"
-  [ "$st" = running ] && cid="$(podman inspect -f '{{.State.Health.Status}}' "kd-$LINEAGE" 2>/dev/null || echo none)" || cid=none
-  case "$cid" in healthy) echo "  kd-$LINEAGE HEALTHY"; exit 0;; esac
+echo "== wait for healthy (Notify=healthy gates this; budget 240s covers the web first boot) =="
+for _ in $(seq 1 48); do
+  all_healthy=1
+  for u in $UNITS; do
+    st="$(systemctl --user show -p SubState --value "$u.service" 2>/dev/null || echo unknown)"
+    [ "$st" = running ] && h="$(podman inspect -f '{{.State.Health.Status}}' "$u" 2>/dev/null || echo none)" || h=none
+    [ "$h" = healthy ] || { all_healthy=0; break; }
+  done
+  [ "$all_healthy" = 1 ] && { echo "  $UNITS ALL HEALTHY"; exit 0; }
   sleep 5
 done
-die "kd-$LINEAGE did not go healthy within budget — check 'journalctl --user -u kd-$LINEAGE.service'"
+die "not all of [$UNITS] went healthy within budget — check 'journalctl --user -u kd-$LINEAGE.service' and 'journalctl --user -u kd-web-$LINEAGE.service'"

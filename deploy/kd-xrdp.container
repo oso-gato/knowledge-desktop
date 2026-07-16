@@ -1,9 +1,11 @@
-# kd-xrdp.container — systemd quadlet for LINEAGE 1 (XRDP/X11/XFCE). WP-03.
-# The ONLY sanctioned run contract for this lineage (F1), BYTE-IDENTICAL across host classes
-# (B4): /dev/dri rides an optional AddDevice (silent no-op on the GPU-less class); any
-# host-side GPU group mapping is a host drop-in installed by setup.sh, never a quadlet edit.
-# Health mirrors the .live-gate HEALTH for this lineage VERBATIM (gate/lint.sh drift-checks it);
-# it deepens to kd-health in the same PR that lands kd-health (WP-06/07).
+# kd-xrdp.container — systemd quadlet for LINEAGE 1 (XRDP/X11/XFCE). WP-03, [ADJ-34].
+# The sanctioned run contract for this lineage is THIS unit + its netns-joined web-door sidecar
+# (kd-web-xrdp.container) — see [ADJ-34]. BYTE-IDENTICAL across host classes (B4): /dev/dri rides
+# an optional AddDevice (silent no-op on the GPU-less class); any host-side GPU group mapping is
+# a host drop-in installed by setup.sh, never a quadlet edit.
+# Health: HealthCmd carries the .live-gate HEALTH for this lineage (gate/lint.sh asserts the
+# .live-gate HEALTH string is contained in the HealthCmd line — the honest drift check; the old
+# header claimed a VERBATIM mirror + full drift-check before either was true).
 [Unit]
 Description=knowledge-desktop — lineage 1 (XRDP/X11/XFCE)
 
@@ -20,12 +22,14 @@ AddDevice=/dev/fuse
 Volume=kd-xrdp-home:/home:rw,nosuid,nodev
 Volume=kd-xrdp-state:/var/lib/kd:rw,nosuid,nodev
 Volume=kd-xrdp-shared:/srv/shared:rw,nosuid,nodev
-# --- network: ONE public door (A2) — the web door; everything else tailnet-only ---
+# --- network: ONE public door (A2). 443 is published HERE because this container OWNS the
+#     shared netns ([ADJ-34]: podman forbids port bindings on a joined netns); the LISTENER is
+#     Caddy inside kd-web-xrdp, the netns-joined sidecar. Everything else tailnet-only. ---
 PublishPort=443:443
 Network=kd-xrdp.network
 # --- health (F2): truthful; slow first boot never falsely unhealthy ---
 Notify=healthy
-HealthCmd=test -f /run/kd/boot-ok
+HealthCmd=kd-health
 HealthInterval=10s
 HealthRetries=12
 HealthStartPeriod=120s

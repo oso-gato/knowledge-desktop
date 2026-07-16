@@ -59,6 +59,27 @@ if [ -n "$quadlets" ]; then
     for q in $quadlets; do
         grep -q '^Secret=kd-roster' "$q" || err "$q: missing Secret=kd-roster line (drift vs SECRETS.md)"
     done
+    # HealthCmd ↔ .live-gate HEALTH drift ([ADJ-34] PR: the old quadlet headers CLAIMED this
+    # check existed — now it does). Contract: the .live-gate HEALTH_<target> string must be
+    # CONTAINED in the quadlet's HealthCmd line (containment, not equality — the quadlet may
+    # shell-wrap it). Present-tolerant per the file-top rule: a quadlet whose target has no
+    # HEALTH_<target> key yet is skipped (loud when present, silent when not).
+    for q in $quadlets; do
+        base="$(basename "$q" .container)"
+        case "$base" in
+            kd-web-*) tgt="web" ;;
+            kd-*)     tgt="${base#kd-}" ;;
+            *)        continue ;;
+        esac
+        health="$(sed -n "s/^HEALTH_${tgt}='\(.*\)'\$/\1/p" "$LG")"
+        [ -n "$health" ] || continue
+        hc="$(grep '^HealthCmd=' "$q" | head -1)"
+        [ -n "$hc" ] || { err "$q: no HealthCmd= line (target $tgt carries a .live-gate HEALTH)"; continue; }
+        case "$hc" in
+            *"$health"*) ;;
+            *) err "$q: HealthCmd drifted from .live-gate HEALTH_${tgt} (must contain: $health)" ;;
+        esac
+    done
 fi
 
 [ "$fail" = 0 ] && echo "LINT PASS" || echo "LINT: failures above"

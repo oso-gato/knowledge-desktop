@@ -2,6 +2,10 @@
 # a specific address (wildcard add_inet_port), so isolation rests on: ports never published
 # beyond :8443 + NO sibling on this network ⇒ the non-tailnet reach set is empty. F4: distinct
 # from kd-xrdp.
+# [ADJ-34]: the (post-WP-08) kd-web-grd sidecar shares the lineage NETNS (Network=kd-grd.container)
+# — NOT a peer on this network; the no-siblings mechanism above remains intact. It reaches grd's
+# wildcard-bound per-user ports from INSIDE the netns on loopback — the exact reach [ADJ-32]'s
+# in-design guacd always presumed.
 [Network]
 NetworkName=kd-grd
 Internal=false

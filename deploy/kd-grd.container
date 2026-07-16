@@ -1,9 +1,15 @@
-# kd-grd.container — systemd quadlet for LINEAGE 2 (GRD/Wayland/GNOME, systemd PID 1). WP-03.
-# The ONLY sanctioned run contract for this lineage (F1), BYTE-IDENTICAL across host classes
-# (B4). F4 co-deploy: every name/volume/port disjoint from kd-xrdp (gate/lint.sh enforces).
-# The systemd payload needs the cap set proven on PR #1 (cap-drop floor kills User= services
-# without it) — under the rootless engine every cap is userns-scoped.
-# Health mirrors .live-gate HEALTH_grd VERBATIM; deepens to kd-health with WP-06/08.
+# kd-grd.container — systemd quadlet for LINEAGE 2 (GRD/Wayland/GNOME, systemd PID 1). WP-03,
+# [ADJ-34]. The sanctioned run contract for this lineage is THIS unit + (post-WP-08) its
+# netns-joined web-door sidecar kd-web-grd.container — see [ADJ-34]; the L2 sidecar lands with
+# the WP-08 stack. BYTE-IDENTICAL across host classes (B4). F4 co-deploy: every name/volume/port
+# disjoint from kd-xrdp (gate/lint.sh enforces). The systemd payload needs the cap set proven on
+# PR #1 (cap-drop floor kills User= services without it) — under the rootless engine every cap
+# is userns-scoped.
+# Health: HealthCmd carries the .live-gate HEALTH_grd contract (running OR degraded — the
+# skeleton's honest terminal-state bar; WP-08 tightens both to `running`). gate/lint.sh asserts
+# the .live-gate HEALTH string is contained in the HealthCmd line (the old header claimed a
+# VERBATIM mirror while HealthCmd accepted running-only — an UNTRUE drift, fixed here).
+# Deepens to kd-health with WP-08.
 [Unit]
 Description=knowledge-desktop — lineage 2 (GRD/Wayland/GNOME)
 
@@ -21,7 +27,7 @@ Volume=kd-grd-shared:/srv/shared:rw,nosuid,nodev
 PublishPort=8443:8443
 Network=kd-grd.network
 Notify=healthy
-HealthCmd=systemctl is-system-running --quiet
+HealthCmd=sh -c 's=$(systemctl is-system-running 2>/dev/null); [ "$s" = running ] || [ "$s" = degraded ]'
 HealthInterval=10s
 HealthRetries=12
 HealthStartPeriod=120s
