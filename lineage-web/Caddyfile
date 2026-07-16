@@ -1,0 +1,24 @@
+# knowledge-desktop web door — Caddyfile (DESIGN §3). The ONE public door (A1/A2/A5):
+# HTTPS on :443, terminating TLS and reverse-proxying to the loopback Tomcat. NO :80 ever
+# (A2 — the ACME challenge is TLS-ALPN-01 on 443; there is no cleartext HTTP listener).
+#
+# TLS: this shipped default is the GATE / self-signed posture — `tls internal` (a container-local
+# CA) on the :443 site, so a no-roster boot serves HTTPS with a self-signed cert. Production ACME
+# for the roster's public DNS name is a DEPLOY-TIME concern (a later WP wires the site-address +
+# ACME rewrite from the roster); THIS entrypoint does NOT rewrite the Caddyfile — it ships as-is.
+{
+	admin off
+	auto_https disable_redirects
+	# no HTTP port — 443 only (A2)
+	http_port 8081
+}
+
+:443 {
+	tls internal
+	encode zstd gzip
+	# the real client IP reaches Tomcat's RemoteIpValve via XFF (internalProxies=127.0.0.1)
+	reverse_proxy 127.0.0.1:8080 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto https
+	}
+}

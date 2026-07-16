@@ -1,0 +1,159 @@
+# knowledge-desktop — WEB DOOR (Guacamole gateway; DESIGN §3). The ONE public door (A1-A5):
+# HTTPS over Caddy :443 -> Tomcat 9 (guacamole webapp) -> guacd -> per-user desktop transport.
+# Two stages: (1) build guacd 1.6.0 + vendored FreeRDP 3.14 (the #5-residual recipe, proven);
+# (2) the runtime gateway. Co-deploys beside the L1/L2 desktop containers on a dedicated network.
+#
+# NOTE (WP-10 in-box tier): this image BUILDS + ASSEMBLES in the nested engine; the live auth
+# round-trip (A3 TOTP, A4 lockout, A11 same-session paint) is HOST-GATE tier (DESIGN §7).
+
+# =========================== STAGE 1: guacd + vendored FreeRDP ===============================
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST} AS guac-build
+
+ARG FREERDP_VERSION=3.14.0
+ARG GUACD_VERSION=1.6.0
+ARG FREERDP_SHA256=a7a979382703c2bc18aa9b22cfa12d7a441b6927ab45ac62ef8353786bc92241
+ARG GUACD_SHA256=8bc45675da96d7b6f39728160181e3d4ff3c08f460f6d26de5805b642bf13f2b
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+        gcc gcc-c++ make cmake autoconf automake libtool pkgconf-pkg-config tar gzip \
+        openssl-devel zlib-devel cjson-devel uriparser-devel fuse3-devel \
+        cairo-devel libjpeg-turbo-devel libpng-devel libuuid-devel \
+        pango-devel libssh2-devel libvncserver-devel libwebsockets-devel \
+        pulseaudio-libs-devel libvorbis-devel libwebp-devel libtool-ltdl-devel \
+    && dnf clean all
+
+ADD https://github.com/FreeRDP/FreeRDP/archive/refs/tags/${FREERDP_VERSION}.tar.gz /tmp/frdp.tar.gz
+RUN set -eo pipefail; cd /tmp \
+    && echo "${FREERDP_SHA256}  frdp.tar.gz" | sha256sum -c - \
+    && tar xzf frdp.tar.gz && cd FreeRDP-${FREERDP_VERSION} \
+    && cmake -B build -S . \
+        -DCMAKE_INSTALL_PREFIX=/opt/guacamole -DCMAKE_BUILD_TYPE=Release \
+        -DWITH_SERVER=OFF -DWITH_X11=OFF -DWITH_CLIENT_SDL=OFF -DWITH_SAMPLE=OFF \
+        -DBUILD_TESTING=OFF -DWITH_PCSC=OFF -DWITH_CUPS=OFF -DWITH_FFMPEG=OFF \
+        -DWITH_SWSCALE=OFF -DWITH_MANPAGES=OFF -DCHANNEL_URBDRC=OFF -DWITH_KRB5=OFF \
+        -DWITH_OPUS=OFF -DWITH_WEBVIEW=OFF -DWITH_LIBSYSTEMD=OFF \
+    && cmake --build build -j"$(nproc)" && cmake --install build \
+    && { test -e /opt/guacamole/lib64/libfreerdp3.so || test -e /opt/guacamole/lib/libfreerdp3.so; }
+
+# guacd: -Wno-error (glibc _XOPEN_SOURCE vs guac's -Werror) + the FOUR force-defines guac's
+# autoconf mis-detects against the vendored 3.14 (each verified present in freerdp.h). See the
+# [[guacd-freerdp314-build]] recipe / the WP-10 foundation commit for the full diagnosis.
+ADD https://archive.apache.org/dist/guacamole/${GUACD_VERSION}/source/guacamole-server-${GUACD_VERSION}.tar.gz /tmp/g.tar.gz
+RUN set -eo pipefail; cd /tmp \
+    && echo "${GUACD_SHA256}  g.tar.gz" | sha256sum -c - \
+    && tar xzf g.tar.gz && cd guacamole-server-${GUACD_VERSION} \
+    && export PKG_CONFIG_PATH=/opt/guacamole/lib64/pkgconfig:/opt/guacamole/lib/pkgconfig \
+    && ./configure --prefix=/opt/guacamole --disable-dependency-tracking \
+        CFLAGS="-Wno-error -DFREERDP_HAS_CONTEXT -DHAVE_FREERDP_VERIFYCERTIFICATEEX -DHAVE_DISCONNECT_CONTEXT -DRDP_INST_HAS_LOAD_CHANNELS -I/opt/guacamole/include/freerdp3 -I/opt/guacamole/include/winpr3" \
+        LDFLAGS="-L/opt/guacamole/lib64 -L/opt/guacamole/lib -Wl,-rpath,/opt/guacamole/lib64:/opt/guacamole/lib" \
+        2>&1 | tee /tmp/cfg.log \
+    && grep -Eq "freerdp[[:space:].]+yes" /tmp/cfg.log \
+    && grep -Eq "^[[:space:]]*RDP[[:space:].]+yes[[:space:]]*$" /tmp/cfg.log \
+    && grep -Eq "^[[:space:]]*VNC[[:space:].]+yes[[:space:]]*$" /tmp/cfg.log \
+    && grep -Eq "^[[:space:]]*SSH[[:space:].]+yes[[:space:]]*$" /tmp/cfg.log \
+    && make -j"$(nproc)" && make install
+RUN test -x /opt/guacamole/sbin/guacd \
+    && test -e /opt/guacamole/lib/libguac-client-rdp.so \
+    && test -e /opt/guacamole/lib/libguac-client-vnc.so \
+    && test -e /opt/guacamole/lib/libguac-client-ssh.so \
+    && ldd /opt/guacamole/lib/libguac-client-rdp.so | grep -q '/opt/guacamole/lib.*freerdp'
+
+# ================================ STAGE 2: runtime gateway ===================================
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
+
+ARG TOMCAT_VERSION=9.0.120
+ARG GUAC_VERSION=1.6.0
+ARG TOMCAT_SHA512=07eb6d9639c3e69af81171a16ccff1c19b7fd5b2e87e3646851f0a3f42a4ce3c1bf128fbe40fc978a08935ba4f0400ef3b43ded3e470b9aaf23b97a9e1fa0858
+ARG GUAC_WAR_SHA256=b41ceb1e2df010b54db563e0b00edb8d5fe9f073c6168462e4c978df0fc6e716
+ARG GUAC_JDBC_SHA256=97bc5fd3d67d25c0e98a475d1dfd308a037859f549fac47171c723b7a7039366
+ARG GUAC_TOTP_SHA256=0202c197d3b4e59e69b4dde2a80906adf5f03a497748b74ad3d599022e26f347
+ARG GUAC_BAN_SHA256=b4c4a2d73d3f66083c46d05409e3dea6f560579d3cf9c3ca3bf099aad7040aca
+
+# Runtime (class-a; N2 leaf packages):
+#   java-25-openjdk-headless  the JRE Tomcat 9 runs on (Fedora 44 ships 25)
+#   caddy                     the :443 public door / ACME / TLS terminator (a)
+#   postgresql-server         the guac auth DB, 127.0.0.1 only ([ADJ-4])
+#   postgresql                psql client (kd-web-sync + schema load)
+#   guacd runtime libs        cairo libjpeg-turbo libpng pango libssh2 libvncserver
+#                             libwebsockets libvorbis libwebp cjson uriparser fuse3 opus
+#                             (the closure of guacd + its vendored FreeRDP's plugins)
+#   openssl, xxd(vim-common)  kd-web-sync's salted-SHA256 verifier derivation (E1)
+#   procps-ng, iproute        kd-web-health process/listener checks
+#   tar gzip                  unpack the class-c artifacts
+RUN dnf -y --setopt=install_weak_deps=False install \
+        java-25-openjdk-headless caddy postgresql-server postgresql \
+        cairo libjpeg-turbo libpng pango libssh2 libvncserver libwebsockets \
+        libvorbis libwebp cjson uriparser fuse3 opus \
+        openssl vim-common procps-ng iproute tar gzip shadow-utils util-linux curl \
+    && dnf clean all
+
+# guacd + vendored FreeRDP from stage 1 (rpath-linked, self-contained under /opt/guacamole)
+COPY --from=guac-build /opt/guacamole /opt/guacamole
+
+# --- Tomcat 9 (class-c: Fedora ships only Tomcat 10/jakarta; guacamole.war is javax) ---
+ADD https://archive.apache.org/dist/tomcat/tomcat-9/v${TOMCAT_VERSION}/bin/apache-tomcat-${TOMCAT_VERSION}.tar.gz /tmp/tomcat.tar.gz
+RUN set -eo pipefail \
+    && echo "${TOMCAT_SHA512}  /tmp/tomcat.tar.gz" | sha512sum -c - \
+    && mkdir -p /opt/tomcat \
+    && tar xzf /tmp/tomcat.tar.gz -C /opt/tomcat --strip-components=1 \
+    && rm -rf /opt/tomcat/webapps/* /tmp/tomcat.tar.gz
+
+# --- guacamole webapp + extensions (class-c, each sha256-verified) ---
+ADD https://archive.apache.org/dist/guacamole/${GUAC_VERSION}/binary/guacamole-${GUAC_VERSION}.war /opt/tomcat/webapps/guacamole.war
+ADD https://archive.apache.org/dist/guacamole/${GUAC_VERSION}/binary/guacamole-auth-jdbc-${GUAC_VERSION}.tar.gz /tmp/jdbc.tar.gz
+ADD https://archive.apache.org/dist/guacamole/${GUAC_VERSION}/binary/guacamole-auth-totp-${GUAC_VERSION}.tar.gz /tmp/totp.tar.gz
+ADD https://archive.apache.org/dist/guacamole/${GUAC_VERSION}/binary/guacamole-auth-ban-${GUAC_VERSION}.tar.gz /tmp/ban.tar.gz
+RUN set -eo pipefail \
+    && echo "${GUAC_WAR_SHA256}  /opt/tomcat/webapps/guacamole.war" | sha256sum -c - \
+    && echo "${GUAC_JDBC_SHA256}  /tmp/jdbc.tar.gz" | sha256sum -c - \
+    && echo "${GUAC_TOTP_SHA256}  /tmp/totp.tar.gz" | sha256sum -c - \
+    && echo "${GUAC_BAN_SHA256}  /tmp/ban.tar.gz"  | sha256sum -c - \
+    && mkdir -p /etc/guacamole/extensions /etc/guacamole/lib /opt/guac-schema \
+    && for a in jdbc totp ban; do tar xzf /tmp/$a.tar.gz -C /tmp; done \
+    && cp /tmp/guacamole-auth-jdbc-${GUAC_VERSION}/postgresql/guacamole-auth-jdbc-postgresql-${GUAC_VERSION}.jar /etc/guacamole/extensions/ \
+    && cp /tmp/guacamole-auth-totp-${GUAC_VERSION}/guacamole-auth-totp-${GUAC_VERSION}.jar /etc/guacamole/extensions/ \
+    && cp /tmp/guacamole-auth-ban-${GUAC_VERSION}/guacamole-auth-ban-${GUAC_VERSION}.jar /etc/guacamole/extensions/ \
+    && cp /tmp/guacamole-auth-jdbc-${GUAC_VERSION}/postgresql/schema/*.sql /opt/guac-schema/ \
+    && rm -rf /tmp/jdbc.tar.gz /tmp/totp.tar.gz /tmp/ban.tar.gz /tmp/guacamole-auth-*
+
+# --- PostgreSQL JDBC driver (class-a jar from Fedora's postgresql-jdbc, symlinked in) ---
+RUN dnf -y --setopt=install_weak_deps=False install postgresql-jdbc && dnf clean all \
+    && cp /usr/share/java/postgresql-jdbc/postgresql.jar /etc/guacamole/lib/postgresql.jar
+
+# Tomcat hardening via sed on the SHIPPED server.xml (robust across patch versions; N4 asserts):
+#   - the HTTP Connector binds 127.0.0.1 ONLY (never public; Caddy is the sole front door, A2)
+#   - a RemoteIpValve inside <Host> with internalProxies pinned EXACTLY to 127.0.0.1
+#     (A2/WD-#12: XFF is trusted ONLY from the loopback Caddy hop, so per-source ban A4 sees
+#     the real client IP and the default 127/8 regex can't swallow per-source test addresses)
+RUN set -e \
+    && grep -q '<Connector port="8080"' /opt/tomcat/conf/server.xml \
+    && sed -i 's|<Connector port="8080" protocol="HTTP/1.1"|<Connector port="8080" address="127.0.0.1" protocol="HTTP/1.1"|' /opt/tomcat/conf/server.xml \
+    && grep -q 'address="127.0.0.1"' /opt/tomcat/conf/server.xml \
+    && sed -i 's|\(<Host name="localhost".*\)|\1\n        <Valve className="org.apache.catalina.valves.RemoteIpValve" internalProxies="127\\.0\\.0\\.1" remoteIpHeader="x-forwarded-for" protocolHeader="x-forwarded-proto" />|' /opt/tomcat/conf/server.xml \
+    && grep -q 'RemoteIpValve' /opt/tomcat/conf/server.xml
+
+# GUACAMOLE_HOME for the webapp; JAVA_HOME resolved at boot (jre path is version-specific).
+ENV GUACAMOLE_HOME=/etc/guacamole \
+    CATALINA_HOME=/opt/tomcat
+COPY lineage-web/guacamole.properties /etc/guacamole/guacamole.properties
+COPY lineage-web/Caddyfile            /etc/caddy/Caddyfile
+COPY lineage-web/entrypoint-web.sh    /usr/local/bin/kd-entrypoint
+COPY shared/kd-provision              /usr/libexec/kd/kd-provision
+COPY lineage-web/kd-web-sync          /usr/libexec/kd/kd-web-sync
+COPY lineage-web/kd-web-health        /usr/local/bin/kd-health
+RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
+        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-web-sync \
+    && rm -f /etc/guacamole/guacamole.properties.tmpl 2>/dev/null || true
+
+# A dedicated unprivileged user for postgres + tomcat + guacd (D3-adjacent; the web tier holds
+# no desktop-user power); the entrypoint runs services under it.
+RUN useradd -r -m -d /var/lib/kdweb -s /sbin/nologin kdweb \
+    && mkdir -p /var/lib/pgsql/data /run/kd \
+    && chown -R kdweb:kdweb /var/lib/pgsql /opt/tomcat /run/kd /etc/guacamole
+# NB: ALL of /opt/tomcat is kdweb-owned (not just logs/temp/work) — Tomcat runs as kdweb and must
+# EXPLODE guacamole.war into webapps/guacamole/ at first boot; a read-only webapps/ silently fails
+# the deploy and the webapp never answers.
+
+EXPOSE 443
+ENTRYPOINT ["/usr/local/bin/kd-entrypoint"]

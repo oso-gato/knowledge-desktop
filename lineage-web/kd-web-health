@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# kd-web-health (WEB DOOR; DESIGN §3 [ADJ-6], WP-10) — TRUTHFUL deep-liveness (F2). NOT a
+# login probe (a failed login self-bans, A4/WD-#11): an UNAUTHENTICATED GET of a webapp API
+# endpoint asserts a well-formed response through the FULL chain Caddy->Tomcat->webapp->DB,
+# generating ZERO auth failures so it never accumulates ban state and a banned source never
+# flips health.
+set -u
+fail(){ echo "kd-web: UNHEALTHY — $*"; exit 1; }
+
+[ -f /run/kd/boot-ok ] || fail "init incomplete (no /run/kd/boot-ok)"
+pgrep -x guacd >/dev/null || fail "guacd not running"
+pgrep -x java  >/dev/null || fail "tomcat (java) not running"
+pgrep -x caddy >/dev/null || fail "caddy not running"
+
+# guacd control port answers on loopback
+timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/4822' 2>/dev/null || fail "guacd not answering :4822"
+
+# deep liveness: the webapp's patch/language API returns 200 + JSON through Tomcat (no auth,
+# no ban state). This exercises Caddy TLS -> Tomcat -> webapp -> (guacamole servlet) end-to-end.
+code="$(curl -fsS -k -o /dev/null -w '%{http_code}' \
+    'https://127.0.0.1:443/guacamole/api/languages' 2>/dev/null || echo 000)"
+[ "$code" = 200 ] || fail "web deep-liveness GET returned $code (want 200) via Caddy->Tomcat"
+
+exit 0
