@@ -22,6 +22,10 @@ pgrep -x xrdp        >/dev/null || fail "xrdp not running"
 # a real TCP answer on the loopback door, not just a process (N5)
 timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/3389' 2>/dev/null \
     || fail "no answer on loopback :3389"
+# SSH terminal door (WP-13, A8): sshd alive + answering on loopback :22 (a real TCP answer, N5)
+pgrep -x sshd >/dev/null || fail "sshd not running (A8 terminal door down)"
+timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22' 2>/dev/null \
+    || fail "no answer on loopback :22 (sshd)"
 # provisioning ALWAYS completes (strict E2 — a rosterless boot never reaches here; it exits rc=3)
 [ -f /run/kd/provision-complete ] || fail "provisioning never completed"
 # VNC door (WP-09): a provisioned box has ≥1 prestarted session, so ≥1 x0vncserver must be alive
