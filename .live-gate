@@ -42,7 +42,9 @@ SECRET_ENV_xrdp='{"version":1,"box":{"tailnet_authkey":"tskey-fixture-not-a-real
 # provisioned boot ALSO needs the shadow-utils/session caps over the gate --cap-drop=ALL floor
 # (runtime useradd/chpasswd + XFCE prestart; the web door needed the same set) + headroom: 4g /
 # 2048 pids / 30x6s = 180s past the real first boot. NET_BIND_SERVICE added for the WP-13 sshd
-# door (binds the PRIVILEGED :22; the older xrdp/VNC doors are >1024, so this is new).
+# door (binds the PRIVILEGED :22; the older xrdp/VNC doors are >1024, so this is new), and
+# SYS_CHROOT for the same door: sshd's pre-auth privilege separation chroot()s to
+# /usr/share/empty.sshd — without it sshd answers :22 but EVERY login dies pre-auth.
 FENCE_xrdp="--security-opt label=disable --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL --cap-add NET_BIND_SERVICE --cap-add SYS_CHROOT"
 MEMORY_xrdp="4g"
 PIDS_xrdp="2048"
