@@ -39,6 +39,14 @@ echo "kd-entrypoint: starting xrdp (loopback-first, ADJ-8)"
 /usr/sbin/xrdp --nodaemon &
 pids+=($!); XRDP_PID=$!
 
+# WP-13 (A8): the SSH terminal door — generate host keys, then sshd key-only on loopback (the
+# tailnet ListenAddress rides the tailnet WP). authorized_keys are kd-provision's (per user).
+echo "kd-entrypoint: starting sshd (A8 terminal door, key-only)"
+ssh-keygen -A >/dev/null 2>&1 || true
+install -d -m 0755 /run/sshd
+/usr/sbin/sshd -D &
+pids+=($!); SSHD_PID=$!
+
 # Give the RDP loopback door time to come up before provisioning prestarts sessions through it.
 # NON-FATAL (F2): xrdp's first boot generates RSA keys, which can be slow on a loaded shared host
 # — a hard exit here made a slow keygen a RED (the entrypoint died before kd-health could report).
@@ -77,5 +85,9 @@ while :; do
         echo "kd-entrypoint: xrdp died — waiting for :3389 to free, then restarting (F2)"
         wait_port_free
         /usr/sbin/xrdp --nodaemon & XRDP_PID=$!; pids+=($!)
+    fi
+    if ! kill -0 "$SSHD_PID" 2>/dev/null; then
+        echo "kd-entrypoint: sshd died — restarting (F2)"
+        /usr/sbin/sshd -D & SSHD_PID=$!; pids+=($!)
     fi
 done
