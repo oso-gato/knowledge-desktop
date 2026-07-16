@@ -5,17 +5,26 @@
 # passes it, one user at a time, with secrets ON STDIN (E1 — never argv/env).
 #
 # Verbs (kd-provision's per-user interface):
-#   apply-user  <user>   phrase on stdin -> upsert the guac user with a salted-SHA256 verifier
-#                        (Guacamole's native scheme; the memory-hard-KDF gap is disclosed E6 R9,
-#                        bounded by A3 TOTP + A4 ban + loopback-only DB). Idempotent.
+#   apply-user  <user> [uid]  phrase on stdin -> upsert the guac user with a salted-SHA256
+#                        verifier (Guacamole's native scheme; the memory-hard-KDF gap is
+#                        disclosed E6 R9, bounded by A3 TOTP + A4 ban + loopback-only DB).
+#                        WITH uid (WP-11): ALSO upsert the user's L1 DESKTOP TILE — a guac VNC
+#                        connection to 127.0.0.1:(5900 + uid - 2000), the [ADJ-34] in-netns
+#                        loopback endpoint doors-agent serves at the SAME arithmetic. The row
+#                        stores the derived first-8 VNC form (at-rest exposure = E6 R7),
+#                        color-depth pinned 32bpp (BUILDPLAN WP-11), READ-granted to that
+#                        user's entity ONLY (A9/A12: each user sees exactly their own tile).
+#                        Idempotent. uid is an identity, not a secret (E1 holds on argv).
 #   disable-user <user>  mark the guac user disabled — **PRESERVING the TOTP enrollment rows**
 #                        (the D5 keystone: a re-enabled user keeps their authenticator; verified
 #                        against the guacamole_user.disabled flag + the guacamole_user_attribute
-#                        totp rows, which are NOT touched).
+#                        totp rows, which are NOT touched). The tile row stays — a disabled user
+#                        cannot log in to reach it (D5 disable-not-delete).
 #   enable-user <user>   clear the disabled flag (reinstatement).
 #
-# Auth to Postgres is peer/loopback (127.0.0.1, DESIGN §3 [ADJ-4] — pgJDBC is TCP-only); this
-# runs inside the web container as the DB owner. Salt+hash match Guacamole's exact scheme so the
+# Auth to Postgres: PEER over the unix socket, running AS the DB-owner OS user kdweb (re-exec
+# below). The WEBAPP still speaks TCP 127.0.0.1 + scram (DESIGN §3 [ADJ-4] — pgJDBC is TCP-only);
+# this tool is a socket-local admin path. Salt+hash match Guacamole's exact scheme so the
 # webapp verifies the row: password_hash = SHA-256( UTF8(password) || password_salt ), salt =
 # 32 random bytes stored as bytea. (Guacamole hex-encodes the salt into the UTF-8 it hashes —
 # replicated below. HONEST TIER (N4/N5): NO shipped gate performs a login round-trip today —
@@ -24,18 +33,34 @@
 # scheme's correctness rests on source-verified replication, not a runtime assertion.)
 set -euo pipefail
 
-PGHOST="${KD_PGHOST:-127.0.0.1}"
+# Peer auth over the UNIX socket as the DB-owner OS user (kdweb): the header's stated contract,
+# now actually implemented — the old defaults (TCP 127.0.0.1 as `guacamole`) required the scram
+# password this tool never holds, an unauthenticatable path (WP-11 fix). kd-provision invokes us
+# as root; re-exec as kdweb BEFORE any stdin read (runuser preserves stdin, so the E1 phrase
+# still arrives on fd 0).
+if [ "$(id -u)" = 0 ]; then
+    exec runuser -u kdweb -- "$0" "$@"
+fi
+PGHOST="${KD_PGHOST:-/run/postgresql}"     # a directory ⇒ unix socket ⇒ peer auth
 PGDATABASE="${KD_PGDATABASE:-guacamole_db}"
-PGUSER="${KD_PGUSER:-guacamole}"
+PGUSER="${KD_PGUSER:-kdweb}"               # the initdb superuser; peer maps OS kdweb ⇒ DB kdweb
 export PGHOST PGDATABASE PGUSER
 psql_q(){ psql -v ON_ERROR_STOP=1 -qtAX "$@"; }
 
-usage(){ echo "usage: kd-web-sync apply-user|disable-user|enable-user <user>  (apply: phrase on stdin)" >&2; exit 2; }
-[ $# -eq 2 ] || usage
-verb="$1"; user="$2"
+usage(){ echo "usage: kd-web-sync apply-user <user> [uid] | disable-user|enable-user <user>  (apply: phrase on stdin)" >&2; exit 2; }
+[ $# -eq 2 ] || [ $# -eq 3 ] || usage
+verb="$1"; user="$2"; uid="${3:-}"
 [ -n "$user" ] || usage
 # entity/user names are validated upstream by kd-provision's schema; belt against SQL identifiers
 case "$user" in *[!a-z0-9-]*) echo "kd-web-sync: bad user (value-free)" >&2; exit 1;; esac
+# uid: only apply-user takes it; digits only (it reaches SQL + arithmetic); >= UID_BASE so the
+# port arithmetic can never go below 5900. Validated HERE (fail-fast, before any DB write — a
+# belt violation must not leave a partial apply).
+if [ -n "$uid" ]; then
+    [ "$verb" = apply-user ] || usage
+    case "$uid" in *[!0-9]*|'') echo "kd-web-sync: bad uid (value-free)" >&2; exit 1;; esac
+    [ "$uid" -ge 2000 ] || { echo "kd-web-sync: uid below UID_BASE 2000 (value-free)" >&2; exit 1; }
+fi
 
 ensure_entity(){ # returns the entity_id for a USER entity, creating it if absent
     psql_q -c "INSERT INTO guacamole_entity (name, type) VALUES ('$user','USER')
@@ -65,6 +90,39 @@ ON CONFLICT (entity_id) DO UPDATE SET
   disabled      = FALSE;
 SQL
     echo "kd-web-sync: applied web identity for $user"
+
+    # ---- WP-11: the L1 desktop TILE (uid present => upsert the VNC connection row) ----
+    if [ -n "$uid" ]; then
+        port=$((5900 + uid - 2000))          # doors-agent serves the SAME arithmetic ([ADJ-34] loopback)
+        vnc8="${phrase:0:8}"                 # the A13 first-8 derivation (at rest: E6 R7)
+        vnc8_sql="${vnc8//\'/\'\'}"          # phrase charset is [a-z0-9-], but belt the quote anyway
+        conn="${user}-desktop"
+        psql_q <<SQL
+-- one root-level connection per user, name-keyed; parent stays NULL (root group)
+INSERT INTO guacamole_connection (connection_name, protocol)
+SELECT '$conn', 'vnc'
+WHERE NOT EXISTS (SELECT 1 FROM guacamole_connection
+                  WHERE connection_name='$conn' AND parent_id IS NULL);
+-- parameters: full refresh (idempotent; the row set IS the contract)
+DELETE FROM guacamole_connection_parameter
+ WHERE connection_id = (SELECT connection_id FROM guacamole_connection
+                        WHERE connection_name='$conn' AND parent_id IS NULL);
+INSERT INTO guacamole_connection_parameter (connection_id, parameter_name, parameter_value)
+SELECT c.connection_id, p.name, p.value
+FROM (SELECT connection_id FROM guacamole_connection
+      WHERE connection_name='$conn' AND parent_id IS NULL) c,
+     (VALUES ('hostname','127.0.0.1'),
+             ('port','$port'),
+             ('password','$vnc8_sql'),
+             ('color-depth','32')) AS p(name, value);
+-- visibility: READ for THIS user's entity only (A9/A12 — each user sees exactly their own tile)
+INSERT INTO guacamole_connection_permission (entity_id, connection_id, permission)
+SELECT $eid, connection_id, 'READ'
+FROM guacamole_connection WHERE connection_name='$conn' AND parent_id IS NULL
+ON CONFLICT DO NOTHING;
+SQL
+        echo "kd-web-sync: applied desktop tile for $user (vnc 127.0.0.1:$port, 32bpp)"
+    fi
     ;;
 disable-user)
     # D5 KEYSTONE: set disabled, but DO NOT DELETE the user row or its TOTP attribute rows —
