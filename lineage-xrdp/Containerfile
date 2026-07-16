@@ -129,6 +129,7 @@ COPY lineage-xrdp/xorg.conf         /etc/X11/xrdp/xorg.conf
 COPY shared/entrypoint-l1.sh        /usr/local/bin/kd-entrypoint
 COPY shared/kd-health               /usr/local/bin/kd-health
 COPY shared/kd-provision            /usr/libexec/kd/kd-provision
+COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
 COPY lineage-xrdp/kd-cred           /usr/libexec/kd/kd-cred
 COPY lineage-xrdp/kd-session-enable /usr/libexec/kd/kd-session-enable
 COPY lineage-xrdp/startwm-kd        /usr/libexec/kd/startwm-kd
@@ -136,7 +137,7 @@ COPY lineage-xrdp/doors-agent       /usr/libexec/kd/doors-agent
 COPY gate/probe/kd-vnc-login        /usr/libexec/kd/kd-vnc-login
 COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
 RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
-        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
+        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
         /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check
 
