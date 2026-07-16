@@ -19,8 +19,11 @@
 #                         bash-PID-1 lineage to provide it (design-reconcile note, WP-07 PR)
 #   python3               kd-provision runtime (WP-06)
 #   shadow-utils          useradd/usermod/chpasswd — provisioning (WP-06)
-#   tigervnc-server-common vncpasswd — the A13 first-8 VNC derivation (WP-06; the VNC door
-#                         itself is WP-09)
+#   tigervnc-server-common vncpasswd — the A13 first-8 VNC derivation (WP-06)
+#   tigervnc-x11-server   x0vncserver — the WP-09 VNC door (attaches to the session's Xorg,
+#                         loopback + AlwaysShared). NB the Fedora package that ships x0vncserver
+#                         is tigervnc-x11-server, NOT "tigervnc-server" (DESIGN §17 pkg name
+#                         corrected empirically — repoquery --whatprovides */x0vncserver)
 #   acl                   setfacl — the D4 shared-folder default ACL (WP-06)
 #   procps-ng             pgrep — kd-health's process liveness (F2)
 #   glibc-langpack-en     UTF-8 locale so the desktop and terminals render text correctly
@@ -32,7 +35,8 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         xrdp xorgxrdp-glamor xorg-x11-server-Xorg mesa-dri-drivers \
         xfce4-session xfwm4 xfce4-panel xfdesktop xfce4-settings xfconf thunar \
         xfce4-notifyd dbus-daemon \
-        python3 shadow-utils tigervnc-server-common acl procps-ng glibc-langpack-en \
+        python3 shadow-utils tigervnc-server-common tigervnc-x11-server \
+        acl procps-ng glibc-langpack-en \
     && dnf clean all
 
 # Config deltas over the SHIPPED files — sed with hard asserts so a package update that
@@ -62,8 +66,10 @@ COPY shared/kd-provision            /usr/libexec/kd/kd-provision
 COPY lineage-xrdp/kd-cred           /usr/libexec/kd/kd-cred
 COPY lineage-xrdp/kd-session-enable /usr/libexec/kd/kd-session-enable
 COPY lineage-xrdp/startwm-kd        /usr/libexec/kd/startwm-kd
+COPY lineage-xrdp/doors-agent       /usr/libexec/kd/doors-agent
 RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
         /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
-        /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd
+        /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
+        /usr/libexec/kd/doors-agent
 
 ENTRYPOINT ["/usr/local/bin/kd-entrypoint"]

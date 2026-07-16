@@ -31,7 +31,7 @@ CFILE_xrdp="lineage-xrdp/Containerfile"
 HEALTH_xrdp='kd-health'
 # self-diagnosing (H4): a RED carries its own evidence — run/kd state, the daemon census, and
 # whether the loopback door answers
-PROBE_xrdp='kd-health || { echo "=run-kd="; ls -la /run/kd 2>&1; echo "=procs="; pgrep -l "xrdp|sesman|Xorg|xfce" 2>&1; echo "=door="; timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/3389" 2>/dev/null && echo open || echo closed; exit 1; }'
+PROBE_xrdp='kd-health || { echo "=run-kd="; ls -la /run/kd 2>&1; echo "=procs="; pgrep -l "xrdp|sesman|Xorg|xfce|x0vnc" 2>&1; echo "=rdp-door="; timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/3389" 2>/dev/null && echo open || echo closed; echo "=vnc-doors:"; for p in {5900..5920}; do timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$p" 2>/dev/null && echo "vnc $p open"; done; exit 1; }'
 HEALTH_TRIES_xrdp="20"
 HEALTH_SLEEP_xrdp="5"
 
