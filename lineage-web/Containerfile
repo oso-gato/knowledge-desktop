@@ -86,7 +86,12 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         cairo libjpeg-turbo libpng pango libssh2 libvncserver libwebsockets \
         libvorbis libwebp cjson uriparser fuse3 opus \
         openssl vim-common procps-ng iproute tar gzip shadow-utils util-linux curl \
+        python3 acl \
     && dnf clean all
+# python3 + acl (WP-11): kd-provision (python3) runs at boot in THIS container too ([ADJ-11]
+# "sole roster parser" holds PER-CONTAINER) — the Unix accounts it creates give uid parity for
+# the tile-port arithmetic (5900 + uid - 2000); setfacl backs its D4 shared-folder step (inert
+# here — no /srv/shared volume — but the step must not crash on a missing binary).
 
 # guacd + vendored FreeRDP from stage 1 (rpath-linked, self-contained under /opt/guacamole)
 COPY --from=guac-build /opt/guacamole /opt/guacamole
@@ -140,10 +145,11 @@ COPY lineage-web/guacamole.properties /etc/guacamole/guacamole.properties
 COPY lineage-web/Caddyfile            /etc/caddy/Caddyfile
 COPY lineage-web/entrypoint-web.sh    /usr/local/bin/kd-entrypoint
 COPY shared/kd-provision              /usr/libexec/kd/kd-provision
+COPY lineage-web/kd-cred              /usr/libexec/kd/kd-cred
 COPY lineage-web/kd-web-sync          /usr/libexec/kd/kd-web-sync
 COPY lineage-web/kd-web-health        /usr/local/bin/kd-health
 RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
-        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-web-sync \
+        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred /usr/libexec/kd/kd-web-sync \
     && rm -f /etc/guacamole/guacamole.properties.tmpl 2>/dev/null || true
 
 # A dedicated unprivileged user for postgres + tomcat + guacd (D3-adjacent; the web tier holds

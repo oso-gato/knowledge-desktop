@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# kd-cred (WEB-DOOR lineage; WP-11) — the per-lineage door-credential installer, WEB variant.
+# kd-provision's contract REQUIRES a kd-cred hook (a desktop lineage missing it = broken doors,
+# rightly fatal). THIS lineage has no PAM/RDP/VNC door: the web identity is kd-web-sync's job,
+# and the Unix accounts kd-provision creates here exist for UID PARITY ONLY (the tile-port
+# arithmetic) — they stay PASSWORD-LOCKED (useradd default; D3: the web tier holds no
+# desktop-user power, so nothing may PAM-auth inside it). So:
+#   install <user>  consume + discard stdin (the phrase must never linger in a pipe), no-op.
+#   revoke  <user>  no-op (nothing was installed).
+# Both verbs succeed so kd-provision's per-user flow treats this lineage uniformly.
+set -euo pipefail
+usage(){ echo "usage: kd-cred install|revoke <user>  (install: phrase on stdin, discarded)" >&2; exit 2; }
+[ $# -eq 2 ] || usage
+verb="$1"
+case "$verb" in
+install) cat >/dev/null ;;   # drain stdin; NO credential installed by design (see header)
+revoke)  : ;;
+*) usage ;;
+esac
+exit 0

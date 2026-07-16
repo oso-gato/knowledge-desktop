@@ -19,9 +19,17 @@ set -u
 log(){ echo "doors-agent: $*"; }
 
 : "${DISPLAY:?doors-agent: no DISPLAY (must run inside the session)}"
-n="${DISPLAY#*:}"; n="${n%%.*}"                 # :N[.screen] -> N
-case "$n" in ''|*[!0-9]*) log "unparseable DISPLAY='$DISPLAY' — no VNC door"; exit 1;; esac
-rfbport=$((5900 + n))
+# Port derivation (WP-11, [ADJ-34]): 5900 + (uid - UID_BASE), NOT 5900 + display number. The uid
+# is the STABLE per-user quantity (kd-provision's append-only uidmap, E3: a user keeps their uid
+# across roster edits, disables, restarts), whereas sesman allocates displays in session-start
+# order, which can reorder across crashes. kd-web-sync writes the user's guac tile row from the
+# SAME arithmetic, so the tile row and this listener agree by construction — no runtime lookup.
+uid="$(id -u)"
+if [ "$uid" -lt 2000 ]; then
+    log "uid $uid below UID_BASE 2000 (not a roster user) — no VNC door; idle-exit"
+    exit 0
+fi
+rfbport=$((5900 + uid - 2000))
 PW="$HOME/.kd/vncpasswd"
 
 # No credential -> nothing to serve (an unprovisioned/skeleton session). Exit cleanly; kd-health

@@ -22,7 +22,7 @@ export GUACAMOLE_HOME=/etc/guacamole CATALINA_HOME=/opt/tomcat
 export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
 PGDATA=/var/lib/pgsql/data
 RUN=/run/kd
-mkdir -p "$RUN"
+mkdir -p "$RUN" /var/lib/kd
 # PostgreSQL's default unix_socket_directories is /var/run/postgresql; without systemd-tmpfiles
 # (we are bash-PID-1, not systemd) nothing creates it, so postgres FATALs on the socket lock file.
 # Create it owned by kdweb so both the server and the default-socket psql clients find it.
@@ -54,9 +54,17 @@ log "starting postgres"
 run_pg /usr/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/pg.log" -w -t 60 start >/dev/null \
     || { log "FATAL: postgres failed to start"; tail -20 "$PGDATA/pg.log" 2>/dev/null; exit 1; }
 
+# The loopback DB credential lives INSIDE the pg volume ($PGDATA/kdweb-dbpass, 0600 kdweb) so it
+# SURVIVES container recreation with the DB it unlocks — guacamole.properties is an image-layer
+# file that resets on every recreation, so on the old scheme (append at first boot only) a
+# recreated container had a persisted DB but no credential line: Tomcat could never auth (E3 bug,
+# found by tracing recreation). Generated first boot, synced into the props EVERY boot.
+DBPASS_FILE="$PGDATA/kdweb-dbpass"
 if [ "${FIRST_BOOT:-0}" = 1 ]; then
     log "creating DB + guacamole role + loading schema"
     DBPASS="$(openssl rand -hex 24)"        # loopback DB credential — generated, never in image (E1)
+    printf '%s\n' "$DBPASS" | run_pg tee "$DBPASS_FILE" >/dev/null
+    run_pg chmod 0600 "$DBPASS_FILE"
     # connect to the built-in `postgres` DB — initdb makes no DB named after the kdweb superuser,
     # so a bare psql (which defaults to dbname=$USER) would FATAL on 'database "kdweb" does not exist'
     run_pg /usr/bin/psql -v ON_ERROR_STOP=1 -q -d postgres <<SQL || { log "FATAL: DB init"; exit 1; }
@@ -72,13 +80,39 @@ GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO guacamole;
 UPDATE guacamole_user u SET disabled = TRUE FROM guacamole_entity e
   WHERE u.entity_id = e.entity_id AND e.name = 'guacadmin';
 SQL
-    # inject the loopback DB password into guacamole.properties (0600, container-internal). Done AS
-    # kdweb — the file is already kdweb-owned (build chown of /etc/guacamole); appending/chmod as the
-    # owner needs no cap, whereas root writing it would need the (userns-ineffective) DAC_OVERRIDE.
-    printf 'postgresql-password: %s\n' "$DBPASS" \
-        | run_pg tee -a "$GUACAMOLE_HOME/guacamole.properties" >/dev/null
-    run_pg chmod 0600 "$GUACAMOLE_HOME/guacamole.properties"
     unset DBPASS
+fi
+
+# EVERY boot: sync the persisted credential into guacamole.properties (image-layer, fresh each
+# recreation). Done AS kdweb — the file is kdweb-owned (build chown); root writing it would need
+# the userns-ineffective DAC_OVERRIDE.
+if run_pg test -s "$DBPASS_FILE"; then
+    { grep -v '^postgresql-password:' "$GUACAMOLE_HOME/guacamole.properties" 2>/dev/null || true; } \
+        | run_pg tee "$GUACAMOLE_HOME/guacamole.properties.new" >/dev/null
+    printf 'postgresql-password: %s\n' "$(run_pg cat "$DBPASS_FILE")" \
+        | run_pg tee -a "$GUACAMOLE_HOME/guacamole.properties.new" >/dev/null
+    run_pg mv "$GUACAMOLE_HOME/guacamole.properties.new" "$GUACAMOLE_HOME/guacamole.properties"
+    run_pg chmod 0600 "$GUACAMOLE_HOME/guacamole.properties"
+else
+    log "FATAL: no DB credential at $DBPASS_FILE (persisted DB without its credential?)"; exit 1
+fi
+
+# ---- 1b. provision (WP-11): roster -> guac users + desktop tiles ----
+# kd-provision (the sole roster parser, [ADJ-11] — runs PER-CONTAINER over the same secret)
+# drives kd-web-sync: web identity + TOTP posture + the L1 VNC tile row per user. Unix accounts
+# are created here too — the uid IS the tile-port derivation (5900 + uid - 2000), and the
+# append-only uidmap on the state volume (E3) keeps it in parity with the desktop container
+# (same roster history + same rule => same uids; divergence is an E6-disclosed residual probed
+# at WP-20). Desktop-only hooks (kd-cred, kd-session-enable) are absent in this image —
+# kd-provision logs each loudly and continues (its designed optional-hook contract).
+# Roster semantics mirror L1 (E6 R18): present+invalid => fail-fast; ABSENT => skeleton mode.
+if [ -e /run/secrets/kd-roster ] || [ -n "${KD_ROSTER:-}" ]; then
+    log "roster present — provisioning web identities + tiles (fail-fast on invalid, E2)"
+    /usr/libexec/kd/kd-provision || exit $?
+else
+    log "SKELETON MODE — no roster mounted; provisioning skipped; the gateway serves with zero" \
+        "users (guacadmin disabled at boot, A12 fail-closed). Disclosed pre-WP-02 gate residual (E6 R18)."
+    touch /run/kd/skeleton-mode
 fi
 
 # ---- 2. guacd (loopback; vendored FreeRDP via rpath) ----

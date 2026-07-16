@@ -35,7 +35,8 @@ Interfaces this drives (installed per lineage; each optional hook is loudly logg
 absent so a missing consumer is visible, never silent):
   /usr/libexec/kd/kd-cred install|revoke <user>   REQUIRED  phrase on stdin (install)
   /usr/libexec/kd/kd-session-enable <user>        optional  pass-2 hook (WP-07/WP-08)
-  /usr/libexec/kd/kd-web-sync <verb> <user>       optional  web door sync (WP-10)
+  /usr/libexec/kd/kd-web-sync <verb> <user> [uid] optional  web door sync (WP-10/WP-11; uid on
+                                                            apply-user drives the tile row)
 
 Exit codes: 0 provisioned (excluded workers, if any, are logged) · 2 roster invalid (fatal
 validation; uid-range exhaustion included) · 3 roster missing, unreadable, or not parseable
@@ -348,10 +349,14 @@ def apply_user(u, uid, created):
     elif os.path.exists(ak):
         os.unlink(ak)
 
-    # web door sync (WP-10 consumer; optional hook until it lands)
+    # web door sync (WP-10/WP-11 consumer; optional hook until it lands). The uid rides argv —
+    # an identity, not a secret (E1 holds; usernames already appear in logs, E6 R19-class).
+    # kd-web-sync derives the user's stable L1 VNC tile port from it (WP-11: 5900 + uid -
+    # UID_BASE — the same arithmetic doors-agent uses), so the connection row and the listener
+    # agree with no cross-container runtime lookup.
     ws = hook("kd-web-sync")
     if ws:
-        run([ws, "apply-user", name], stdin_data=u["password"] + "\n")
+        run([ws, "apply-user", name, str(uid)], stdin_data=u["password"] + "\n")
     else:
         log(f"hook absent (lands WP-10): kd-web-sync — web identity for {name} not synced")
 
