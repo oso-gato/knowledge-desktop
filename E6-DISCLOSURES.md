@@ -1,6 +1,6 @@
 # E6 — Security-posture disclosure register
 
-REQUIREMENTS.md E6: every accepted residual risk is documented here, honestly, and never papered
+00-REQUIREMENTS.md E6: every accepted residual risk is documented here, honestly, and never papered
 over with theater (N4). A change that adds a residual MUST add a row in the same PR. Rows cite
 the design element that creates them (DESIGN.md).
 

@@ -2,15 +2,17 @@
 
 ## Document hierarchy (binding)
 
-1. **REQUIREMENTS.md** — the measuring stick (v1.01, owner-approved). Every design, build,
-   validation, and ship decision is graded against it. It changes ONLY with the owner's explicit
-   approval — never as part of a feature PR.
-2. **DESIGN.md** — the architecture. TRACES to REQUIREMENTS.md; never constrains it. Contains the
-   FR trace matrix, the empirical-validation register (V1–V37), and the [ADJ] decision log.
-   Design changes ride normal PRs but must keep the trace matrix complete.
-3. **BUILDPLAN.md** — the ordered work packages (WP-00…WP-22), each one PR. Update the plan in the
+1. **00-OBJECTIVES.md** — the objective (spec of record, owner-approved). The mission this repo
+   delivers; the north star every decision re-grounds on.
+2. **00-REQUIREMENTS.md** — the functional requirements (spec of record, v1.01, owner-approved) —
+   the measuring stick. Every design, build, validation, and ship decision is graded against it.
+   Both specs change ONLY with the owner's explicit approval — never as part of a feature PR.
+3. **DESIGN.md** — the architecture. TRACES to 00-OBJECTIVES.md + 00-REQUIREMENTS.md; never
+   constrains them. Contains the FR trace matrix, the empirical-validation register (V1–V37), and
+   the [ADJ] decision log. Design changes ride normal PRs but must keep the trace matrix complete.
+4. **BUILDPLAN.md** — the ordered work packages (WP-00…WP-22), each one PR. Update the plan in the
    same PR that completes or reshapes a WP.
-4. **OWNER-BRIEF.md** — historic audit trail of the rulings that produced v1.0/v1.01. Read-only.
+5. **OWNER-BRIEF.md** — historic audit trail of the rulings that produced v1.0/v1.01. Read-only.
 
 ## Zero-base rule (binding)
 

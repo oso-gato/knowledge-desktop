@@ -1,8 +1,10 @@
 # knowledge-desktop — consolidated owner brief (working capture, 2026-07-12)
 
-> **STATUS: EXECUTED.** REQUIREMENTS.md v1.0 was owner-approved and finalized 2026-07-12
-> (commit 2b48892, pushed to main). **The doc is now the authority, not this brief** — this file
-> remains only as the audit trail of the rulings that produced v1.0. Late rulings folded in at
+> **STATUS: EXECUTED.** The founding requirements (v1.0) were owner-approved and finalized 2026-07-12
+> (commit 2b48892, pushed to main) — now split into the companion specs of record **00-OBJECTIVES.md**
+> (the objective) + **00-REQUIREMENTS.md** (the functional requirements), 2026-07-14, no content
+> change. **Those docs are now the authority, not this brief** — this file remains only as the audit
+> trail of the rulings that produced v1.0. Late rulings folded in at
 > finalization: R8 (below); the "13 not 14" flag stands owner-unchallenged and shipped as 13.
 
 ## R8 — Desktop environments per lineage (finalized 2026-07-12)

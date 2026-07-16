@@ -1,6 +1,6 @@
 # knowledge-desktop — DESIGN (synthesis v1.0)
 
-Traces to REQUIREMENTS.md v1.01. Synthesized from six subsystem designs and six adversarial challenges; every confirmed defect is fixed here, every cross-subsystem conflict resolved. Decisions that overrode a subsystem design are marked **[ADJ-n]** and recorded in §9.
+Traces to 00-OBJECTIVES.md + 00-REQUIREMENTS.md v1.01. Synthesized from six subsystem designs and six adversarial challenges; every confirmed defect is fixed here, every cross-subsystem conflict resolved. Decisions that overrode a subsystem design are marked **[ADJ-n]** and recorded in §9.
 
 ---
 
