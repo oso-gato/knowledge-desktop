@@ -49,7 +49,10 @@ The quadlet mounts it `Secret=kd-roster,mode=0400,uid=0` → `/run/secrets/kd-ro
   value-free log line; boot continues.
 - **Rotation:** edit roster → `podman secret rm kd-roster && podman secret create …` (or
   `--replace`) → restart the quadlet. Effects land at next boot (D5).
-- **Never in logs:** no roster value may appear in any journal, argv, or another uid's
-  environment (E1, gate-scanned).
+- **Never in logs (E1, re-scoped per DESIGN §4, gate-scanned):** no roster SECRET — password,
+  token, key, authkey — may appear in any journal, argv, image layer, or another uid's
+  environment. Secrets travel exclusively via stdin/fd. Disclosed residuals (E6): usernames
+  (identities, not secrets) appear in provisioning logs; an unknown-KEY rejection echoes the
+  offending key names.
 - The roster is the box's **crown jewels** (disclosed in E6): whoever holds it holds every
   user's credential and the tailnet key. Guard the host accordingly.
