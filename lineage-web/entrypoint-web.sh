@@ -4,9 +4,10 @@
 # (E1: none in the image). First boot loads the guacamole schema + disables the default
 # guacadmin; subsequent boots reuse the persisted DB (E3, on the state volume at prod).
 #
-# TIER NOTE (N5): the DEEP-LIVENESS bar (an unauth API GET through Caddy->Tomcat->webapp->DB
-# returns well-formed) is the Tier-1/host-gate live proof, run by the .live-gate `web` target on a
-# clean engine. The live per-user auth round-trip (A3/A4/A11) is the manual/browser tier above it.
+# TIER NOTE (N5): kd-health's two legs (an unauth API GET proving Caddy->Tomcat->webapp servlet,
+# plus a real SELECT 1 proving postgres answers) are the Tier-1/host-gate live proof, run by the
+# .live-gate `web` target on a clean engine. The live per-user auth round-trip (A3/A4/A11) is the
+# manual/browser tier above it.
 set -u
 # Caddy (root PID 1) stores its `tls internal` CA + autosave under $XDG_DATA_HOME/caddy and
 # $XDG_CONFIG_HOME/caddy. The default ($HOME/.local/share) lands in /root, which Fedora ships
