@@ -360,6 +360,20 @@ def apply_user(u, uid, created):
     else:
         log(f"hook absent (lands WP-10): kd-web-sync — web identity for {name} not synced")
 
+    # agent env / git identity (WP-13 agents, G1/G2): install the user's git identity + GitHub
+    # credential so their resident agent AND the E4 vault sync operate GitHub AS them. The TOKEN
+    # rides STDIN only (E1 — never argv/log/other-uid env); the identity fields (login/name/email/
+    # provider) are non-secret argv. Run AS the user (its files are user-owned 0600). Skipped when
+    # the user has no `vcs` block. check=False so a credential hiccup never rolls back the account.
+    vcs = u.get("vcs")
+    aenv = hook("kd-agent-env")
+    if vcs and aenv:
+        run(["runuser", "-u", name, "--", "env", f"HOME={home}", aenv,
+             vcs["login"], vcs["git_name"], vcs["git_email"], vcs["provider"]],
+            stdin_data=vcs["token"] + "\n", check=False)
+    elif vcs:
+        log(f"hook absent (lands WP-13-agents): kd-agent-env — git identity for {name} not installed")
+
 
 def write_grants(u, endpoints):
     """Grants file: 0640 root:kd-door, exact-match fail-closed, regenerated each run (A10)."""

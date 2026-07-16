@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# kd-agent-env (WP-13 agents, G1/G2) — install the user's git identity + GitHub credential so their
+# resident agent (and the E4 vault sync) can operate GitHub AS them. Run AS the vault/agent-owning
+# user by kd-provision (runuser). The credential TOKEN arrives on STDIN ONLY.
+#
+# E1 (DESIGN §4): the token is a SECRET. It NEVER appears in argv, in a log line, or in any other
+# uid's environment. It is read from stdin into a shell variable and written to the user's OWN
+# 0600 files with bash BUILTINS (printf/echo — no exec, so nothing lands in /proc/*/cmdline). The
+# only argv values here are the NON-secret identity fields (login, name, email, provider). Storing
+# the user's own credential inside their own uid (git-credentials + GH_TOKEN env) is the documented,
+# owner-account-class residual the design accepts and discloses (E6) — not an E1 breach.
+#
+# Args: <login> <git_name> <git_email> <provider>   (all non-secret; token = stdin, one line)
+set -u
+login="${1:?login}"; gname="${2:?git_name}"; gemail="${3:?git_email}"; provider="${4:-github}"
+IFS= read -r token || true            # exactly one line from stdin; NEVER echoed
+
+# map the provider name -> the git host
+case "$provider" in
+    github|github.com)  host=github.com ;;
+    gitlab|gitlab.com)  host=gitlab.com ;;
+    *)                  host="$provider" ;;
+esac
+
+umask 077
+
+# git identity (NON-secret) + the file-store credential helper
+git config --global user.name  "$gname"
+git config --global user.email "$gemail"
+git config --global credential.helper store
+
+# ~/.git-credentials 0600 (the documented `store` backend). Write via temp+rename so the token
+# never transits a readable inode; printf is a bash BUILTIN so the token is not in any argv.
+cred="$HOME/.git-credentials"
+tmp="$(mktemp "$HOME/.git-credentials.XXXXXX")"
+printf 'https://%s:%s@%s\n' "$login" "$token" "$host" > "$tmp"
+chmod 600 "$tmp"; mv -f "$tmp" "$cred"
+
+# GH_TOKEN in a 0600 agent env for gh + the resident Claude Code agent (owner-uid credential). The
+# agent sources this; `gh` reads GH_TOKEN from the environment. Token-on-file, never argv/log.
+envdir="$HOME/.config/kd"; mkdir -p "$envdir"; chmod 700 "$envdir"
+envf="$envdir/vcs.env"
+tmp2="$(mktemp "$envdir/vcs.env.XXXXXX")"
+printf 'export GH_TOKEN=%s\nexport GITHUB_TOKEN=%s\nexport GIT_AUTHOR_NAME=%q\nexport GIT_AUTHOR_EMAIL=%q\n' \
+    "$token" "$token" "$gname" "$gemail" > "$tmp2"
+chmod 600 "$tmp2"; mv -f "$tmp2" "$envf"
+
+# status line carries NO secret (identity + host only)
+echo "kd-agent-env[$(id -un)]: git identity ($gname <$gemail>) + $host credential installed"
