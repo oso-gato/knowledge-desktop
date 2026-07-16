@@ -22,9 +22,10 @@ LIVE_GATE_TARGETS="grd xrdp"
 # WP-07 v1 (the sanctioned same-PR capability extension, header rule above): the walking
 # skeleton's truthful bar — kd-health asserts init-complete + sesman/xrdp ALIVE + a real TCP
 # answer on the loopback RDP door (N5), replacing the v0 boot-ok flag check. The gate boots
-# this candidate WITHOUT a roster → SKELETON MODE (disclosed: E6 R18, retired at WP-02); the
-# full RDP round-trip probe needs the WP-02 probe-container harness and is proven in-box by
-# shared/tests/kd-l1-roundtrip.test.sh until then.
+# this candidate WITHOUT a roster → SKELETON MODE (disclosed: E6 R18, retired at WP-02). The
+# full RDP round-trip (session attach + paint) is HOST-GATE tier and lands with the WP-02
+# probe-container harness; the nested dev engine cannot run isolated X sessions, so it is NOT
+# proven in-box (in-box = build + assembly + boot→kd-health, per shared/tests/kd-l1-skeleton.test.sh).
 CFILE_xrdp="lineage-xrdp/Containerfile"
 HEALTH_xrdp='kd-health'
 # self-diagnosing (H4): a RED carries its own evidence — run/kd state, the daemon census, and
