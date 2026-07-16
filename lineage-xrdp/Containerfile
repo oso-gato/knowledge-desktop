@@ -1,16 +1,69 @@
 # knowledge-desktop — LINEAGE 1: XRDP / X11 / XFCE (DESIGN.md §1)
-# WP-01 SKELETON: proves the two-lineage tree + CI + gate plumbing end-to-end. The desktop
-# stack lands per BUILDPLAN (WP-07 walking skeleton onward). Base is digest-pinned (N1);
-# the digest is bumped by PR only (weekly currency rides dnf update at build + the resolve-log).
+# WP-07 WALKING SKELETON: a real desktop image — XFCE rendered server-side by Xorg/xorgxrdp,
+# served over RDP, sessions prestarted at boot from the roster (C3/A11 seed). Base is
+# digest-pinned (N1); the digest is bumped by PR only.
+#
+# Package justifications (N2 — capability-relative minimalism, weak deps off):
+#   xrdp                  the RDP door (0.10.6, class a; DESIGN §1 pin)
+#   xorgxrdp-glamor       the Xorg xrdpdev driver WITH glamor — the entire L1 B4 mechanism
+#                         (GPU when present, swrast when not) as one class-(a) artifact
+#   xorg-x11-server-Xorg  the non-suid Xorg sesman spawns per session (/usr/libexec/Xorg)
+#   mesa-dri-drivers      GL/DRI runtime for glamor + llvmpipe software fallback (V16)
+#   xfce4-session xfwm4 xfce4-panel xfdesktop xfce4-settings xfconf thunar
+#                         the owner-elected XFCE core set (§1 lineage mandate; B1 windowing/
+#                         file-management/desktop)
+#   xfce4-notifyd         notification daemon — E4's human-visible conflict stop needs one
+#                         (challenge VST-#7)
+#   dbus-daemon           per-session bus bound at the DESIGNED address $XDG_RUNTIME_DIR/bus
+#                         (VST-#7 contract) — no systemd user manager exists on this
+#                         bash-PID-1 lineage to provide it (design-reconcile note, WP-07 PR)
+#   python3               kd-provision runtime (WP-06)
+#   shadow-utils          useradd/usermod/chpasswd — provisioning (WP-06)
+#   tigervnc-server-common vncpasswd — the A13 first-8 VNC derivation (WP-06; the VNC door
+#                         itself is WP-09)
+#   acl                   setfacl — the D4 shared-folder default ACL (WP-06)
+#   procps-ng             pgrep — kd-health's process liveness (F2)
+#   glibc-langpack-en     UTF-8 locale so the desktop and terminals render text correctly
 ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
 FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
 
-# HEAVY/STABLE-EARLY: (dnf layers land here from WP-07 on)  ·  CHURN-LATE: COPY'd glue below
-COPY shared/entrypoint-skel.sh /usr/local/bin/kd-entrypoint
-# WP-06: kd-provision core — shipped INERT (nothing invokes it yet, so skeleton boot/gate are
-# unchanged); the boot-chain invocation + its python3 runtime land with WP-07 (BUILDPLAN).
-COPY shared/kd-provision  /usr/libexec/kd/kd-provision
-COPY lineage-xrdp/kd-cred /usr/libexec/kd/kd-cred
-RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred
+# HEAVY/STABLE-EARLY (churn balance): the dnf layer
+RUN dnf -y --setopt=install_weak_deps=False install \
+        xrdp xorgxrdp-glamor xorg-x11-server-Xorg mesa-dri-drivers \
+        xfce4-session xfwm4 xfce4-panel xfdesktop xfce4-settings xfconf thunar \
+        xfce4-notifyd dbus-daemon \
+        python3 shadow-utils tigervnc-server-common acl procps-ng glibc-langpack-en \
+    && dnf clean all
+
+# Config deltas over the SHIPPED files — sed with hard asserts so a package update that
+# moves a line FAILS the build instead of silently dropping a product delta (N4):
+#   xrdp.ini   port -> loopback-first ([ADJ-8]; the tailnet listener is added by the async
+#              doors work, never at boot — E2: the box serves with no tailnet at all)
+#   xrdp.ini   autorun=Xorg (credentialed connects land straight in the one Xorg session)
+#   sesman.ini DefaultWindowManager -> startwm-kd (the product session wrapper)
+# Fedora's shipped sesman defaults ALREADY carry the design pins Policy=Default,
+# KillDisconnected=false, DisconnectedTimeLimit=0 (verified empirically) — asserted, not sed.
+RUN set -e; \
+    grep -q '^port=3389$' /etc/xrdp/xrdp.ini; \
+    sed -i 's|^port=3389$|port=tcp://127.0.0.1:3389|' /etc/xrdp/xrdp.ini; \
+    grep -q '^autorun=$' /etc/xrdp/xrdp.ini; \
+    sed -i 's|^autorun=$|autorun=Xorg|' /etc/xrdp/xrdp.ini; \
+    grep -qE '^DefaultWindowManager=' /etc/xrdp/sesman.ini; \
+    sed -i 's|^DefaultWindowManager=.*|DefaultWindowManager=/usr/libexec/kd/startwm-kd|' /etc/xrdp/sesman.ini; \
+    grep -q '^Policy=Default' /etc/xrdp/sesman.ini; \
+    grep -q '^KillDisconnected=false' /etc/xrdp/sesman.ini; \
+    grep -q '^DisconnectedTimeLimit=0' /etc/xrdp/sesman.ini
+
+# CHURN-LATE: repo-owned glue
+COPY lineage-xrdp/xorg.conf         /etc/X11/xrdp/xorg.conf
+COPY shared/entrypoint-l1.sh        /usr/local/bin/kd-entrypoint
+COPY shared/kd-health               /usr/local/bin/kd-health
+COPY shared/kd-provision            /usr/libexec/kd/kd-provision
+COPY lineage-xrdp/kd-cred           /usr/libexec/kd/kd-cred
+COPY lineage-xrdp/kd-session-enable /usr/libexec/kd/kd-session-enable
+COPY lineage-xrdp/startwm-kd        /usr/libexec/kd/startwm-kd
+RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
+        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
+        /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd
 
 ENTRYPOINT ["/usr/local/bin/kd-entrypoint"]

@@ -14,14 +14,26 @@
 # harness + probe catalog (DESIGN §7); each capability WP extends HEALTH/PROBE in its own PR.
 # shellcheck disable=SC2034 # keys are read by the gate's external parser, never by this file
 
-LIVE_GATE_TARGETS="xrdp grd"
+# Order: grd first, xrdp LAST — the verdict comment keeps a TAIL of the combined log, so the
+# last-probed target's self-diagnosing output survives truncation (xrdp is the one under active
+# iteration; grd is already GREEN).
+LIVE_GATE_TARGETS="grd xrdp"
 
 # ---- LINEAGE 1: xrdp ------------------------------------------------------------------------
+# WP-07 v1 (the sanctioned same-PR capability extension, header rule above): the walking
+# skeleton's truthful bar — kd-health asserts init-complete + sesman/xrdp ALIVE + a real TCP
+# answer on the loopback RDP door (N5), replacing the v0 boot-ok flag check. The gate boots
+# this candidate WITHOUT a roster → SKELETON MODE (disclosed: E6 R18, retired at WP-02). The
+# full RDP round-trip (session attach + paint) is HOST-GATE tier and lands with the WP-02
+# probe-container harness; the nested dev engine cannot run isolated X sessions, so it is NOT
+# proven in-box (in-box = build + assembly + boot→kd-health, per shared/tests/kd-l1-skeleton.test.sh).
 CFILE_xrdp="lineage-xrdp/Containerfile"
-HEALTH_xrdp='test -f /run/kd/boot-ok'
-PROBE_xrdp='test -f /run/kd/boot-ok'
-HEALTH_TRIES_xrdp="10"
-HEALTH_SLEEP_xrdp="3"
+HEALTH_xrdp='kd-health'
+# self-diagnosing (H4): a RED carries its own evidence — run/kd state, the daemon census, and
+# whether the loopback door answers
+PROBE_xrdp='kd-health || { echo "=run-kd="; ls -la /run/kd 2>&1; echo "=procs="; pgrep -l "xrdp|sesman|Xorg|xfce" 2>&1; echo "=door="; timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/3389" 2>/dev/null && echo open || echo closed; exit 1; }'
+HEALTH_TRIES_xrdp="20"
+HEALTH_SLEEP_xrdp="5"
 
 # ---- LINEAGE 2: grd (systemd PID 1) ---------------------------------------------------------
 CFILE_grd="lineage-grd/Containerfile"

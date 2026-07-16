@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# kd-session-enable (LINEAGE 1; DESIGN §1, WP-07) — kd-provision's pass-2 hook: prestart the
+# user's ONE desktop session (C3: sessions come up at boot unaided; A11: created once, every
+# door attaches). Invoked BY kd-provision (the sole roster parser) with the user's phrase on
+# STDIN (challenge L1-#12: exactly one component parses the roster; E1: the phrase rides an
+# fd, never argv/env) — xrdp-sesrun authenticates it to sesman via `-F 0` (same fd).
+set -euo pipefail
+
+user="${1:?usage: kd-session-enable <user> (phrase on stdin)}"
+uid="$(id -u "$user")" || { echo "kd-session-enable: no such user (value-free)" >&2; exit 1; }
+
+# the session's XDG_RUNTIME_DIR (no logind on this bash-PID-1 lineage — kd owns the dir)
+install -d -m 0700 -o "$user" -g "$user" "/run/user/${uid}"
+
+# idempotent: an existing live session for this user is kept (A11 — never fork a second);
+# sesman answers "already active" for a running ⟨user,type⟩ which sesrun reports rc 0.
+exec xrdp-sesrun -t Xorg -g 1280x1024 -F 0 "$user"
