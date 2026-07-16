@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Obsidian
+Comment=Knowledge base and vault editor (B2)
+Exec=/opt/obsidian/obsidian %u
+Icon=obsidian
+Terminal=false
+Categories=Office;
+MimeType=x-scheme-handler/obsidian;
+StartupWMClass=obsidian
