@@ -1,0 +1,38 @@
+# kd-grd.container — systemd quadlet for LINEAGE 2 (GRD/Wayland/GNOME, systemd PID 1). WP-03.
+# The ONLY sanctioned run contract for this lineage (F1), BYTE-IDENTICAL across host classes
+# (B4). F4 co-deploy: every name/volume/port disjoint from kd-xrdp (gate/lint.sh enforces).
+# The systemd payload needs the cap set proven on PR #1 (cap-drop floor kills User= services
+# without it) — under the rootless engine every cap is userns-scoped.
+# Health mirrors .live-gate HEALTH_grd VERBATIM; deepens to kd-health with WP-06/08.
+[Unit]
+Description=knowledge-desktop — lineage 2 (GRD/Wayland/GNOME)
+
+[Container]
+Image=ghcr.io/oso-gato/knowledge-desktop-grd:latest
+AutoUpdate=registry
+ContainerName=kd-grd
+Secret=kd-roster,mode=0400,uid=0
+AddDevice=-/dev/dri
+AddDevice=/dev/fuse
+Volume=kd-grd-home:/home:rw,nosuid,nodev
+Volume=kd-grd-state:/var/lib/kd:rw,nosuid,nodev
+Volume=kd-grd-shared:/srv/shared:rw,nosuid,nodev
+# F4: the co-deployed secondary serves 8443 (tls internal / DNS-01 upgrade path — E6 R16)
+PublishPort=8443:8443
+Network=kd-grd.network
+Notify=healthy
+HealthCmd=systemctl is-system-running --quiet
+HealthInterval=10s
+HealthRetries=12
+HealthStartPeriod=120s
+HealthOnFailure=kill
+SecurityLabelDisable=true
+# systemd-PID-1 contract (proven on PR #1: cgroup wiring + the User=-transition cap set)
+PodmanArgs=--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

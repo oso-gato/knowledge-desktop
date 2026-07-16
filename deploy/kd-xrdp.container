@@ -1,0 +1,41 @@
+# kd-xrdp.container — systemd quadlet for LINEAGE 1 (XRDP/X11/XFCE). WP-03.
+# The ONLY sanctioned run contract for this lineage (F1), BYTE-IDENTICAL across host classes
+# (B4): /dev/dri rides an optional AddDevice (silent no-op on the GPU-less class); any
+# host-side GPU group mapping is a host drop-in installed by setup.sh, never a quadlet edit.
+# Health mirrors the .live-gate HEALTH for this lineage VERBATIM (gate/lint.sh drift-checks it);
+# it deepens to kd-health in the same PR that lands kd-health (WP-06/07).
+[Unit]
+Description=knowledge-desktop — lineage 1 (XRDP/X11/XFCE)
+
+[Container]
+Image=ghcr.io/oso-gato/knowledge-desktop-xrdp:latest
+AutoUpdate=registry
+ContainerName=kd-xrdp
+# --- secrets: the single roster (SECRETS.md schema v1); E1 — enters only at deploy ---
+Secret=kd-roster,mode=0400,uid=0
+# --- devices: GPU optional-by-construction (B4); fuse for nested rootless podman (B3) ---
+AddDevice=-/dev/dri
+AddDevice=/dev/fuse
+# --- persistence (E3): all user data survives recreation/upgrade; nosuid,nodev (D3) ---
+Volume=kd-xrdp-home:/home:rw,nosuid,nodev
+Volume=kd-xrdp-state:/var/lib/kd:rw,nosuid,nodev
+Volume=kd-xrdp-shared:/srv/shared:rw,nosuid,nodev
+# --- network: ONE public door (A2) — the web door; everything else tailnet-only ---
+PublishPort=443:443
+Network=kd-xrdp.network
+# --- health (F2): truthful; slow first boot never falsely unhealthy ---
+Notify=healthy
+HealthCmd=test -f /run/kd/boot-ok
+HealthInterval=10s
+HealthRetries=12
+HealthStartPeriod=120s
+HealthOnFailure=kill
+# --- nested rootless podman + passed devices need label=disable (fleet precedent; E6 R12) ---
+SecurityLabelDisable=true
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
