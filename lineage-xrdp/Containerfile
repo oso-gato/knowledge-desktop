@@ -39,6 +39,61 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         acl procps-ng glibc-langpack-en \
     && dnf clean all
 
+# ================= TOOLSET (WP-15, B2) — the knowledge-work applications =====================
+# Provenance-classed per the tool-install hierarchy (class-a Fedora / class-b vendor gpg repo /
+# class-c pinned download; NEVER COPR/curl|sh). CHURN-LATER than the desktop base: these bump on
+# the F3 cadence (Obsidian bump-PR, Claude `latest`), so a toolset change never rebuilds the
+# stable Xorg/XFCE layer above.
+#   firefox         browser (a)
+#   ptyxis          the owner-selected terminal, made DEFAULT below (a)
+#   code            VS Code (b, Microsoft repo)
+#   1password/-cli  1Password GUI + CLI (b, vendor repo)
+#   claude-code     the resident agent (b, Anthropic `latest`; DISABLE_UPDATES pins the binary to
+#                   the dnf-managed one so `claude update` cannot plant a home-volume shadow that
+#                   defeats provenance — [ADJ-16]; the shadow-binary probe asserts it at the gate)
+#   Obsidian        vault editor (c: official tar.gz, version+sha256 EXACT-pinned, fail-closed)
+COPY shared/toolset/vendor-repos.sh /usr/local/libexec/kd-vendor-repos.sh
+RUN chmod 0755 /usr/local/libexec/kd-vendor-repos.sh && /usr/local/libexec/kd-vendor-repos.sh \
+    && dnf -y --setopt=install_weak_deps=False install \
+        firefox ptyxis code 1password 1password-cli claude-code \
+    && dnf clean all \
+    && rm -f /usr/local/libexec/kd-vendor-repos.sh
+
+# Obsidian (class-c): the URL + sha256 are the pin; a hash mismatch FAILS the build (fail-closed).
+ARG OBSIDIAN_VERSION=1.12.7
+ARG OBSIDIAN_SHA256=fcbe08b111d9c1fdb09b9c08952b06e1c829c62163eba2584c4b4ec859be079d
+ADD https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/obsidian-${OBSIDIAN_VERSION}.tar.gz /tmp/obsidian.tar.gz
+RUN set -eo pipefail \
+    && echo "${OBSIDIAN_SHA256}  /tmp/obsidian.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/obsidian \
+    && tar xzf /tmp/obsidian.tar.gz -C /opt/obsidian --strip-components=1 \
+    && ln -sf /opt/obsidian/obsidian /usr/local/bin/obsidian \
+    && rm -f /tmp/obsidian.tar.gz \
+    && test -x /opt/obsidian/obsidian \
+    # Obsidian's tarball ships chrome-sandbox 0755 (VS Code + 1Password ship 4755) — without the
+    # setuid bit Electron cannot use the SUID sandbox and would need --no-sandbox (V23 forbids it
+    # "surfaced, never silent"). Set it setuid-root to match, giving Obsidian the same sandbox path.
+    && chmod 4755 /opt/obsidian/chrome-sandbox
+
+# Toolset config: Ptyxis as the XFCE default terminal (exo helpers mechanism — challenge L1-#10,
+# NOT xfconf); Claude Code update-lock (managed settings); the Obsidian launcher.
+COPY shared/toolset/kd-ptyxis.desktop          /usr/share/xfce4/helpers/kd-ptyxis.desktop
+COPY shared/toolset/helpers.rc                 /etc/xdg/xfce4/helpers.rc
+COPY shared/toolset/claude-managed-settings.json /etc/claude-code/managed-settings.json
+COPY shared/toolset/obsidian.desktop           /usr/share/applications/obsidian.desktop
+
+# Build-time assertions (N4 — a missing tool FAILS the build, never ships a broken toolset claim):
+RUN set -e \
+    && for b in firefox ptyxis code 1password obsidian; do command -v "$b" >/dev/null || { echo "TOOLSET MISSING: $b"; exit 1; }; done \
+    && command -v op >/dev/null || { echo "TOOLSET MISSING: 1password-cli (op)"; exit 1; } \
+    && test -x /usr/bin/claude || { echo "TOOLSET MISSING: claude at /usr/bin (dnf-managed)"; exit 1; } \
+    && grep -q '"DISABLE_UPDATES": *"1"' /etc/claude-code/managed-settings.json \
+    && grep -q '^TerminalEmulator=kd-ptyxis' /etc/xdg/xfce4/helpers.rc \
+    # every Electron app's SUID sandbox is setuid (V23: they start WITHOUT --no-sandbox) \
+    && for s in /usr/share/code/chrome-sandbox /opt/1Password/chrome-sandbox /opt/obsidian/chrome-sandbox; do \
+         [ -u "$s" ] || { echo "V23: $s is not setuid — Electron would need --no-sandbox"; exit 1; }; done \
+    && echo "TOOLSET (B2) assembled: firefox ptyxis code 1password(+op) claude obsidian-${OBSIDIAN_VERSION}"
+
 # Config deltas over the SHIPPED files — sed with hard asserts so a package update that
 # moves a line FAILS the build instead of silently dropping a product delta (N4):
 #   xrdp.ini   port -> loopback-first ([ADJ-8]; the tailnet listener is added by the async

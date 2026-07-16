@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Encoding=UTF-8
+Type=X-XFCE-Helper
+X-XFCE-Category=TerminalEmulator
+X-XFCE-Commands=/usr/bin/ptyxis
+X-XFCE-CommandsWithParameter=/usr/bin/ptyxis --new-window -x "%s"
+Icon=org.gnome.Ptyxis
+Name=Ptyxis
