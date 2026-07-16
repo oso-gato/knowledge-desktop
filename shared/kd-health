@@ -4,16 +4,15 @@
 # stack is never healthy; a slow first boot reads as unhealthy only until init completes
 # (HealthStartPeriod covers the window); it asserts REAL state, never a cached flag alone.
 #
-# v1 = the unconditional tier for the L1 walking skeleton:
+# The UNCONDITIONAL L1 health tier (WP-02 strict E2 — every boot is provisioned; the skeleton-mode
+# skip is RETIRED with E6 R18):
 #   1. init completed (the entrypoint's /run/kd/boot-ok, removed on TERM)
 #   2. session manager alive (xrdp-sesman)
 #   3. RDP front listener alive (xrdp) AND answering on loopback :3389
-#   4. when a roster was provisioned: the provision-complete flag (skeleton-mode boots — the
-#      DISCLOSED no-roster gate residual, see E6 — carry /run/kd/skeleton-mode instead)
-#   5. VNC door (WP-09), provisioned boots only: x0vncserver alive + a loopback RFB port answers
-#      (skeleton mode has no sessions, so this tier is skipped — same residual as item 4).
-# Later tiers per design: web deep-liveness GET (WP-10), tailnet-tier listeners iff the
-# tailnet iface exists (WP-02 fence / tailnet WPs), `systemctl --failed` on L2 (WP-08).
+#   4. provisioning completed (/run/kd/provision-complete) — always, no roster ⇒ no boot (E2)
+#   5. VNC door (WP-09): ≥1 x0vncserver alive AND a loopback RFB port answers (N5 real TCP answer)
+# Later tiers per design: web deep-liveness (WP-10, its own kd-web-health), tailnet-tier listeners
+# iff the tailnet iface exists (tailnet WP), `systemctl --failed` on L2 (WP-08).
 set -u
 fail(){ echo "kd-health: UNHEALTHY — $*"; exit 1; }
 
@@ -23,17 +22,14 @@ pgrep -x xrdp        >/dev/null || fail "xrdp not running"
 # a real TCP answer on the loopback door, not just a process (N5)
 timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/3389' 2>/dev/null \
     || fail "no answer on loopback :3389"
-if [ ! -f /run/kd/skeleton-mode ]; then
-    [ -f /run/kd/provision-complete ] || fail "provisioning never completed"
-    # VNC door (WP-09): a provisioned box has ≥1 prestarted session, so ≥1 x0vncserver must be
-    # alive AND its loopback RFB port must answer (N5 — a real TCP answer, not just a process).
-    # Skeleton mode has zero sessions, so this tier is skipped (the disclosed no-roster residual,
-    # E6) — exactly as the RDP round-trip is only fully proven with a roster at the WP-02 gate.
-    pgrep -x x0vncserver >/dev/null || fail "no x0vncserver (VNC door down)"
-    vnc_ok=0
-    for port in $(seq 5900 5920); do
-        timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null && { vnc_ok=1; break; }
-    done
-    [ "$vnc_ok" = 1 ] || fail "no VNC loopback port (5900-5920) answering"
-fi
+# provisioning ALWAYS completes (strict E2 — a rosterless boot never reaches here; it exits rc=3)
+[ -f /run/kd/provision-complete ] || fail "provisioning never completed"
+# VNC door (WP-09): a provisioned box has ≥1 prestarted session, so ≥1 x0vncserver must be alive
+# AND its loopback RFB port must answer (N5 — a real TCP answer, not just a process).
+pgrep -x x0vncserver >/dev/null || fail "no x0vncserver (VNC door down)"
+vnc_ok=0
+for port in $(seq 5900 5940); do
+    timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null && { vnc_ok=1; break; }
+done
+[ "$vnc_ok" = 1 ] || fail "no VNC loopback port (5900-5940) answering"
 exit 0

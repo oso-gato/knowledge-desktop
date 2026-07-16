@@ -12,9 +12,8 @@
 #     rides the tailnet WP — no tailnet iface exists yet; the loopback endpoint is what §21
 #     fixes as "immediate".
 #   * the cross-container web-tile reach (guacd → this endpoint) is WP-11.
-#   * the live RFB round-trip + V8 truncation semantics are proven at the host gate with a real
-#     roster (WP-02 fixtures) — the nested dev engine cannot run an isolated X session, and the
-#     skeleton-mode gate has no sessions to attach to.
+#   * the live RFB round-trip + V8 truncation semantics are proven at the WP-02 host gate with a
+#     real roster (kd-vnc-check) — the nested dev engine cannot run an isolated X session in-box.
 set -u
 log(){ echo "doors-agent: $*"; }
 
@@ -32,8 +31,9 @@ fi
 rfbport=$((5900 + uid - 2000))
 PW="$HOME/.kd/vncpasswd"
 
-# No credential -> nothing to serve (an unprovisioned/skeleton session). Exit cleanly; kd-health
-# only asserts the VNC door once a roster provisioned sessions (skeleton mode skips it).
+# No credential -> nothing to serve (a session that raced ahead of its kd-cred write). Exit
+# cleanly; under strict E2 every boot is provisioned, so kd-health asserts the VNC door
+# unconditionally — a genuinely credential-less session is a boot-order transient, not a mode.
 if [ ! -s "$PW" ]; then
     log "no VNC password file at $PW — VNC door not started (session unprovisioned); idle-exit"
     exit 0
