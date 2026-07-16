@@ -1,0 +1,31 @@
+# SPIKE (throwaway, not shipped): does guacamole-server 1.6.0's RDP plugin compile against Fedora's
+# DISTRO FreeRDP (3.24/3.27, i.e. PAST the 3.15 API break)? Outcome decides the web door build:
+#   - RDP plugin builds  => distro freerdp usable => NO vendoring (dissolves [ADJ-3] complexity)
+#   - RDP plugin FAILS   => vendored FreeRDP <3.15 proven necessary (validates [ADJ-3]); capture error
+# Provenance note: a feasibility spike (answers "does it compile"), not a shipping artifact — TLS
+# fetch from the canonical Apache archive; the WP-10 SHIPPING build adds GPG verification (N1).
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
+
+# guacamole-server 1.6.0 build deps (Fedora names) + distro freerdp-devel (the version under test).
+RUN dnf -y --setopt=install_weak_deps=False install \
+        gcc make autoconf automake libtool pkgconf-pkg-config tar gzip \
+        cairo-devel libjpeg-turbo-devel libpng-devel libuuid-devel \
+        freerdp-devel pango-devel libssh2-devel libvncserver-devel \
+        libwebsockets-devel pulseaudio-libs-devel openssl-devel \
+        libvorbis-devel libwebp-devel libtool-ltdl-devel \
+    && dnf clean all
+
+ADD https://archive.apache.org/dist/guacamole/1.6.0/source/guacamole-server-1.6.0.tar.gz /tmp/g.tar.gz
+# set -o pipefail so a failing make is NOT masked by the tee pipe (spike-v1 bug).
+# CFLAGS=-Wno-error: guacd 1.6.0 hardcodes _XOPEN_SOURCE 700 while Fedora 44 glibc sets 800, and
+# guacd's -Werror makes the redefinition fatal — a guacd-vs-modern-glibc issue, not FreeRDP. This
+# gets PAST it to the real question. (WP-10 shipping build: source patch or scoped -Wno-error.)
+RUN set -eo pipefail; cd /tmp && tar xzf g.tar.gz && cd guacamole-server-1.6.0 \
+    && ./configure --disable-dependency-tracking CFLAGS="-Wno-error" 2>&1 | tee /tmp/configure.log \
+    && echo "=== configure RESULT (rdp plugin?) ===" \
+    && grep -iE "RDP|FreeRDP|freerdp" /tmp/configure.log | tail -20 \
+    && echo "=== building (RDP plugin against distro freerdp is the API-break canary) ===" \
+    && make -j"$(nproc)" 2>&1 | tee /tmp/make.log \
+    && echo "SPIKE-RESULT: guacd 1.6.0 BUILT against distro freerdp $(pkg-config --modversion freerdp3 2>/dev/null || echo '?')" \
+    && ls -l /tmp/guacamole-server-1.6.0/src/protocols/rdp/.libs/*.so* 2>&1
