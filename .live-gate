@@ -28,6 +28,12 @@ LIVE_GATE_TARGETS="grd xrdp web"
 # probe-container harness; the nested dev engine cannot run isolated X sessions, so it is NOT
 # proven in-box (in-box = build + assembly + boot→kd-health, per shared/tests/kd-l1-skeleton.test.sh).
 CFILE_xrdp="lineage-xrdp/Containerfile"
+# WP-13: the sshd door binds :22 (a PRIVILEGED port) — over the gate's default --cap-drop=ALL
+# floor that needs CAP_NET_BIND_SERVICE (the older xrdp/VNC doors are >1024, so this is new).
+# label=disable mirrors the production quadlet's SecurityLabelDisable=true (SELinux-unconfined for
+# nested podman + passed devices, E6 R12) — also keeps a SELinux-enforcing gate host from
+# tripping sshd host-key/label handling. (WP-02 grows this fence with the provisioning caps.)
+FENCE_xrdp="--security-opt label=disable --cap-add NET_BIND_SERVICE"
 HEALTH_xrdp='kd-health'
 # self-diagnosing (H4): a RED carries its own evidence — run/kd state, the daemon census, and
 # whether the loopback door answers
