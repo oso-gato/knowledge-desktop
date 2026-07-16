@@ -6,11 +6,18 @@
 ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
 FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
 
-# dbus-broker: systemd-logind (statically wanted by multi-user.target, Restart=always) needs the
-# system bus; without a broker it restart-loops and pins the manager in `starting` forever, so the
-# gate's `is-system-running` HEALTH never passes. logind itself is load-bearing for this lineage
-# (per-user lingering user managers, DESIGN §2) and GNOME/GRD needs D-Bus regardless (WP-08+).
-RUN dnf -y --setopt=install_weak_deps=False install systemd dbus-broker && dnf clean all
+# MINIMAL by design (N2): the skeleton installs ONLY the systemd package. Note that systemd-logind
+# ships INSIDE that package (its binary + the statically-wanted `multi-user.target.wants/
+# systemd-logind.service`), so logind is already present and statically started at skeleton stage.
+# What is NOT present is a system bus: dbus-broker is not installed (it is only a weak Recommends of
+# systemd, so `install_weak_deps=False` never pulls it), so logind cannot reach a bus and fails /
+# hits its start limit. That is EXPECTED at this stage, not a defect — the box still reaches a
+# terminal init state, just `degraded` (one failed unit) rather than `running`, which is exactly
+# why the .live-gate HEALTH accepts running|degraded here (and still rejects starting|offline).
+# dbus-broker — together with the GNOME / gnome-remote-desktop stack that gives the bus a real set
+# of consumers — lands at WP-08, which re-tightens HEALTH back to `running`. Installing dbus-broker
+# NOW, ahead of the consumers that need the bus, would be a package installed before its purpose (N2).
+RUN dnf -y --setopt=install_weak_deps=False install systemd && dnf clean all
 
 # WP-06: kd-provision core — shipped INERT (the unit is NOT enabled, so skeleton boot/gate
 # are unchanged); WP-08 enables it with the GRD stack + python3 (see kd-provision.service).
