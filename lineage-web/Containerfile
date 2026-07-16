@@ -149,11 +149,19 @@ RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
 # A dedicated unprivileged user for postgres + tomcat + guacd (D3-adjacent; the web tier holds
 # no desktop-user power); the entrypoint runs services under it.
 RUN useradd -r -m -d /var/lib/kdweb -s /sbin/nologin kdweb \
-    && mkdir -p /var/lib/pgsql/data /run/kd \
-    && chown -R kdweb:kdweb /var/lib/pgsql /opt/tomcat /run/kd /etc/guacamole
-# NB: ALL of /opt/tomcat is kdweb-owned (not just logs/temp/work) — Tomcat runs as kdweb and must
+    && mkdir -p /var/lib/pgsql/data /run/kd /var/lib/caddy-data \
+    && chmod 0700 /var/lib/caddy-data \
+    && chown -R kdweb:kdweb /var/lib/pgsql /opt/tomcat /etc/guacamole
+# /var/lib/caddy-data stays root-owned + root-writable (Caddy runs as root; XDG_DATA_HOME points
+# here — see the entrypoint). A prod deploy bind-mounts a volume here to persist the internal CA.
+# NB1: ALL of /opt/tomcat is kdweb-owned (not just logs/temp/work) — Tomcat runs as kdweb and must
 # EXPLODE guacamole.war into webapps/guacamole/ at first boot; a read-only webapps/ silently fails
 # the deploy and the webapp never answers.
+# NB2: /run/kd stays ROOT-owned (NOT chowned to kdweb). The entrypoint (root PID 1) opens the
+# service log files (/run/kd/*.log) via `>>` redirects, then hands the already-open fds to the
+# kdweb services — so kdweb never needs to create files there, and root DOES (a kdweb-owned /run/kd
+# would deny root the redirect open, since DAC_OVERRIDE is ineffective in the rootless userns —
+# that was the WP-10 gate RED: every service "died" because its log redirect failed before it ran).
 
 EXPOSE 443
 ENTRYPOINT ["/usr/local/bin/kd-entrypoint"]

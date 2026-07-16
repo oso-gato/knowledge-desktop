@@ -8,9 +8,15 @@
 # returns well-formed) is the Tier-1/host-gate live proof, run by the .live-gate `web` target on a
 # clean engine. The live per-user auth round-trip (A3/A4/A11) is the manual/browser tier above it.
 set -u
-# Caddy (root PID 1) stores its `tls internal` CA under $HOME/.local/share/caddy; PID 1 may inherit
-# no HOME, which makes Caddy abort ("neither $XDG_DATA_HOME nor $HOME are defined"). Pin it.
+# Caddy (root PID 1) stores its `tls internal` CA + autosave under $XDG_DATA_HOME/caddy and
+# $XDG_CONFIG_HOME/caddy. The default ($HOME/.local/share) lands in /root, which Fedora ships
+# dr-xr-x--- (0550) — root cannot create there without DAC_OVERRIDE, which is INEFFECTIVE under the
+# rootless-userns cap floor (that was a gate RED: "mkdir /root/.local: permission denied"). Pin the
+# XDG dirs to a root-OWNED, root-WRITABLE path (a prod deploy can bind-mount a volume here to persist
+# the internal CA; at the gate it is ephemeral tls-internal, which is fine).
 export HOME="${HOME:-/root}"
+export XDG_DATA_HOME=/var/lib/caddy-data XDG_CONFIG_HOME=/var/lib/caddy-data
+mkdir -p "$XDG_DATA_HOME"
 export GUACAMOLE_HOME=/etc/guacamole CATALINA_HOME=/opt/tomcat
 export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
 PGDATA=/var/lib/pgsql/data
