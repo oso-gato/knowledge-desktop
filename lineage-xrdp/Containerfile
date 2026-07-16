@@ -37,7 +37,12 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         xfce4-notifyd dbus-daemon \
         python3 shadow-utils tigervnc-server-common tigervnc-x11-server \
         acl procps-ng glibc-langpack-en \
+        podman crun passt fuse-overlayfs \
     && dnf clean all
+# WP-16 (B3 nested rootless podman): podman + crun (OCI runtime) + passt/pasta (rootless net) +
+# fuse-overlayfs (the PINNED mount program — determinism across host classes + the gate, [ADJ-12]).
+# shadow-utils (already above) provides newuidmap/newgidmap for the per-user subuid bands
+# kd-provision writes. Per-user storage.conf + graphroot on the /home volume are provisioned at boot.
 
 # ================= TOOLSET (WP-15, B2) — the knowledge-work applications =====================
 # Provenance-classed per the tool-install hierarchy (class-a Fedora / class-b vendor gpg repo /
