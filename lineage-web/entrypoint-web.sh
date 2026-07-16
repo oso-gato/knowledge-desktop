@@ -24,7 +24,9 @@ mkdir -p /run/postgresql && chown kdweb:kdweb /run/postgresql
 log(){ echo "kd-web: $*"; }
 run_pg(){ runuser -u kdweb -- "$@"; }
 
-term(){ rm -f "$RUN/boot-ok"; pkill -TERM caddy 2>/dev/null; pkill -TERM java 2>/dev/null
+# teardown: caddy is root (same uid, no CAP_KILL needed); java runs as kdweb, so signal it AS
+# kdweb (run_pg) rather than root→kdweb, which would need CAP_KILL under the gate's cap-drop floor.
+term(){ rm -f "$RUN/boot-ok"; pkill -TERM caddy 2>/dev/null; run_pg pkill -TERM java 2>/dev/null
         run_pg /usr/bin/pg_ctl -D "$PGDATA" stop -m fast 2>/dev/null; exit 0; }
 trap term TERM INT
 
@@ -32,8 +34,13 @@ trap term TERM INT
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
     log "initdb (first boot)"
     run_pg /usr/bin/initdb -D "$PGDATA" --auth-local=peer --auth-host=scram-sha-256 -U kdweb >/dev/null
-    { echo "listen_addresses = '127.0.0.1'"; echo "port = 5432"; } >> "$PGDATA/postgresql.conf"
-    echo "host all all 127.0.0.1/32 scram-sha-256" >> "$PGDATA/pg_hba.conf"
+    # append config AS kdweb (who owns PGDATA after initdb) — root writing a kdweb-owned file needs
+    # CAP_DAC_OVERRIDE, which is INEFFECTIVE in the rootless userns (verified); kdweb writing its own
+    # files needs no cap at all.
+    printf "listen_addresses = '127.0.0.1'\nport = 5432\n" \
+        | run_pg tee -a "$PGDATA/postgresql.conf" >/dev/null
+    printf 'host all all 127.0.0.1/32 scram-sha-256\n' \
+        | run_pg tee -a "$PGDATA/pg_hba.conf" >/dev/null
     FIRST_BOOT=1
 fi
 log "starting postgres"
@@ -58,10 +65,12 @@ GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO guacamole;
 UPDATE guacamole_user u SET disabled = TRUE FROM guacamole_entity e
   WHERE u.entity_id = e.entity_id AND e.name = 'guacadmin';
 SQL
-    # inject the loopback DB password into guacamole.properties (0600, container-internal)
-    printf 'postgresql-password: %s\n' "$DBPASS" >> "$GUACAMOLE_HOME/guacamole.properties"
-    chmod 0600 "$GUACAMOLE_HOME/guacamole.properties"
-    chown kdweb:kdweb "$GUACAMOLE_HOME/guacamole.properties"
+    # inject the loopback DB password into guacamole.properties (0600, container-internal). Done AS
+    # kdweb — the file is already kdweb-owned (build chown of /etc/guacamole); appending/chmod as the
+    # owner needs no cap, whereas root writing it would need the (userns-ineffective) DAC_OVERRIDE.
+    printf 'postgresql-password: %s\n' "$DBPASS" \
+        | run_pg tee -a "$GUACAMOLE_HOME/guacamole.properties" >/dev/null
+    run_pg chmod 0600 "$GUACAMOLE_HOME/guacamole.properties"
     unset DBPASS
 fi
 
