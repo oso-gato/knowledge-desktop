@@ -130,7 +130,7 @@ RUN set -e \
     && grep -q '<Connector port="8080"' /opt/tomcat/conf/server.xml \
     && sed -i 's|<Connector port="8080" protocol="HTTP/1.1"|<Connector port="8080" address="127.0.0.1" protocol="HTTP/1.1"|' /opt/tomcat/conf/server.xml \
     && grep -q 'address="127.0.0.1"' /opt/tomcat/conf/server.xml \
-    && sed -i 's|\(<Host name="localhost".*\)|\1\n        <Valve className="org.apache.catalina.valves.RemoteIpValve" internalProxies="127\\.0\\.0\\.1" remoteIpHeader="x-forwarded-for" protocolHeader="x-forwarded-proto" />|' /opt/tomcat/conf/server.xml \
+    && sed -i 's|</Host>|        <Valve className="org.apache.catalina.valves.RemoteIpValve" internalProxies="127\\.0\\.0\\.1" remoteIpHeader="x-forwarded-for" protocolHeader="x-forwarded-proto" />\n      </Host>|' /opt/tomcat/conf/server.xml \
     && grep -q 'RemoteIpValve' /opt/tomcat/conf/server.xml
 
 # GUACAMOLE_HOME for the webapp; JAVA_HOME resolved at boot (jre path is version-specific).
