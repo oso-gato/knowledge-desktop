@@ -40,6 +40,28 @@ else
         [ -f "$cf" ] || err ".live-gate: CFILE_${t}=$cf does not exist"
         grep -q "^HEALTH_${t}=" "$LG" || err ".live-gate: HEALTH_${t} missing"
     done
+    # WP-02: any inline roster (SECRET_ENV_<t>) must be the SAME roster as the checked-in fixture —
+    # single source of truth, so the gate can never drift from what kd-provision's own tests use.
+    # Compared as PARSED JSON (key order / whitespace irrelevant); also validates the inline is JSON.
+    if command -v python3 >/dev/null 2>&1; then
+        while IFS= read -r sekey; do
+            t="${sekey#SECRET_ENV_}"; t="${t%%=*}"
+            python3 - "$LG" "$t" gate/fixtures/roster-mixed.json <<'PY' || err ".live-gate: SECRET_ENV_${t} does not byte-equal (parsed) gate/fixtures/roster-mixed.json"
+import json,sys,re
+lg,t,fix=sys.argv[1],sys.argv[2],sys.argv[3]
+m=re.search(r"(?m)^SECRET_ENV_%s='(.*)'$"%re.escape(t), open(lg).read())
+if not m: sys.exit(1)
+try:
+    a=json.loads(m.group(1)); b=json.load(open(fix))
+except Exception: sys.exit(1)
+sys.exit(0 if a==b else 1)
+PY
+        done < <(grep -oE '^SECRET_ENV_[a-z0-9_]+=' "$LG")
+    fi
+    # exactly one VNC-door contract: the probe scripts baked into the image must exist in-tree
+    for p in gate/probe/kd-vnc-login gate/probe/kd-vnc-check; do
+        [ -f "$p" ] || err ".live-gate xrdp PROBE references $p which is not in-tree"
+    done
 fi
 
 # ---- 3. Containerfiles: digest-pinned base (N1) -----------------------------------------------

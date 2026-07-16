@@ -27,10 +27,10 @@
 # this tool is a socket-local admin path. Salt+hash match Guacamole's exact scheme so the
 # webapp verifies the row: password_hash = SHA-256( UTF8(password) || password_salt ), salt =
 # 32 random bytes stored as bytea. (Guacamole hex-encodes the salt into the UTF-8 it hashes —
-# replicated below. HONEST TIER (N4/N5): NO shipped gate performs a login round-trip today —
-# the gate boots skeleton mode with zero users; the live login/TOTP proof sits at the
-# manual/browser tier until the WP-02 roster fixtures arm a gate login probe. Until then this
-# scheme's correctness rests on source-verified replication, not a runtime assertion.)
+# replicated below. HONEST TIER (N4/N5): the WP-02 gate now provisions a real roster and probes
+# the web tile count, but the live WEB login/TOTP round-trip is NOT gate-asserted (the A4 self-ban
+# interaction is a named design task) — it sits at the manual/browser tier. So this salted-SHA256
+# scheme's correctness rests on source-verified replication, not yet a runtime assertion.)
 set -euo pipefail
 
 # Peer auth over the UNIX socket as the DB-owner OS user (kdweb): the header's stated contract,

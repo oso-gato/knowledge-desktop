@@ -429,11 +429,23 @@ def shared_folder(users):
 def main():
     if not os.path.exists(ROSTER):
         die(3, f"roster secret absent at {ROSTER} (E2: missing required secret => fail-fast)")
+    # Distinguish the failure modes with NON-secret metadata (E1 withholds the VALUE only — an
+    # errno, a JSON error position, or the file's size/mode are diagnostics, not roster content).
     try:
         with open(ROSTER, encoding="utf-8") as f:
             roster = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        die(3, "roster unreadable or not valid JSON (value withheld, E1)")
+    except json.JSONDecodeError as e:
+        try: sz = os.path.getsize(ROSTER)
+        except OSError: sz = "?"
+        die(3, f"roster NOT VALID JSON (at line {e.lineno} col {e.colno} pos {e.pos}; bytes={sz}) — value withheld, E1")
+    except UnicodeDecodeError as e:
+        die(3, f"roster NOT UTF-8 (byte {e.start}) — value withheld, E1")
+    except OSError as e:
+        try:
+            st = os.stat(ROSTER); meta = f"size={st.st_size} mode={oct(st.st_mode & 0o777)} f_uid={st.st_uid}"
+        except OSError:
+            meta = "stat failed"
+        die(3, f"roster UNREADABLE ({type(e).__name__} errno={e.errno}; {meta}; reader euid={os.geteuid()}) — value withheld, E1")
 
     os.makedirs(STATE, exist_ok=True)
     os.makedirs(RUN, exist_ok=True)
