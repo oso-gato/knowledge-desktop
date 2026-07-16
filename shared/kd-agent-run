@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# kd-agent-run (WP-13 agents, G1) — the resident Claude Code agent's launch wrapper. It runs in the
+# "agent" window of the user's ONE persistent "kd" tmux session (created by kd-tmux.sh at first
+# login and living in the tmux SERVER, so it survives every disconnect — A8 persistence). It:
+#   1. sources the user's OWN agent env (GH_TOKEN etc — only if kd-agent-env installed it; absent on
+#      a box with no roster `vcs` block, in which case the agent runs credential-less);
+#   2. runs Claude Code in the user's home;
+#   3. on exit DROPS TO A LOGIN SHELL — so the window never dies (tmux reaps an empty window, which
+#      would break A8 session persistence). kd-agent-refresh respawns this window for F3 currency.
+# No secret is echoed here; the env file it sources is the user's own 0600 file (E1 owner-uid).
+set +e   # never let a sourcing/agent error kill the window — always reach the shell fallback
+
+[ -r "$HOME/.config/kd/vcs.env" ] && . "$HOME/.config/kd/vcs.env" 2>/dev/null
+cd "$HOME" 2>/dev/null || true
+
+if command -v claude >/dev/null 2>&1; then
+    claude
+else
+    echo "kd-agent-run: claude not found on PATH — dropping to a shell (the window stays alive)."
+fi
+
+# absolute path so the fallback holds even with a bare/empty $SHELL or a stripped PATH; all kd users
+# are provisioned with -s /bin/bash (kd-provision), so this is their login shell.
+exec /bin/bash -l
