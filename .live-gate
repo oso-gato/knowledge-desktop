@@ -13,7 +13,10 @@
 # (DESIGN §7); each capability WP extends HEALTH/PROBE in the same PR that lands the capability.
 # shellcheck disable=SC2034 # keys are read by the gate's external parser, never by this file
 
-LIVE_GATE_TARGETS="xrdp grd"
+# Order: grd first, xrdp LAST — the verdict comment keeps a TAIL of the combined log, so the
+# last-probed target's self-diagnosing output survives truncation (xrdp is the one under active
+# iteration; grd is already GREEN).
+LIVE_GATE_TARGETS="grd xrdp"
 
 # ---- LINEAGE 1: xrdp ------------------------------------------------------------------------
 # WP-07 v1 (the sanctioned same-PR capability extension, header rule above): the walking
