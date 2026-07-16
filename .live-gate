@@ -32,10 +32,17 @@ CFILE_xrdp="lineage-xrdp/Containerfile"
 # gate/fixtures/roster-mixed.json — gate/lint.sh enforces it (single source of truth).
 SECRET_MOUNT_xrdp="/run/secrets/kd-roster"
 SECRET_ENV_xrdp='{"version":1,"box":{"tailnet_authkey":"tskey-fixture-not-a-real-key","endpoints":{"erebus":{"host":"erebus.tail.fixture","port":22,"user":"core"},"fedora-dev":{"host":"fedora-dev.tail.fixture","port":22,"user":"core"}},"shared_folder":true},"admin":{"username":"kadm","password":"adm-aaaa-0000","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYadm fixture@kd"],"tiles":["erebus","fedora-dev"]},"workers":[{"username":"gw1","password":"gw1-bbbb-1111","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYgw1 fixture@kd"],"tiles":["erebus"]},{"username":"gw2","password":"gw2-cccc-2222"},{"username":"gw3","password":"not-the-a13-shape-at-all"},{"username":"gw1","password":"dup-dddd-3333"},{"username":"root","password":"sys-eeee-4444"},{"username":"gw4","password":"gw4-ffff-5555","color":"mauve"},{"username":"gw5","password":"gw5-gggg-6666","tiles":["mars"]}]}'
-# provisioned boot needs the shadow-utils/session caps over the gate --cap-drop=ALL floor (runtime
-# useradd/chpasswd + XFCE prestart; the web door needed the same set) + headroom (initdb-free but
-# N sesman sessions): 4g / 2048 pids / 30x6s = 180s past the real first boot.
-FENCE_xrdp="--cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL"
+# --security-opt label=disable: mirrors the production quadlet's SecurityLabelDisable=true (the real
+# container runs SELinux-unconfined for nested rootless podman + passed devices, E6 R12). On a
+# SELinux-ENFORCING gate host (erebus) the ro bind-mounted roster secret carries a host label the
+# confined candidate cannot read (root gets EACCES on a root-owned 0600 file — the SELinux
+# signature; unreproducible on the dev box, whose container has SELinux disabled). label=disable
+# makes the candidate match its production posture and read the roster. The fence validator
+# allowlists exactly this security-opt (never seccomp/apparmor=unconfined).
+# provisioned boot ALSO needs the shadow-utils/session caps over the gate --cap-drop=ALL floor
+# (runtime useradd/chpasswd + XFCE prestart; the web door needed the same set) + headroom: 4g /
+# 2048 pids / 30x6s = 180s past the real first boot.
+FENCE_xrdp="--security-opt label=disable --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL"
 MEMORY_xrdp="4g"
 PIDS_xrdp="2048"
 HEALTH_xrdp='kd-health'
@@ -98,7 +105,7 @@ SECRET_ENV_web='{"version":1,"box":{"tailnet_authkey":"tskey-fixture-not-a-real-
 #                          added" note over-generalized the verified finding, which is narrower:
 #                          DAC_OVERRIDE cannot bridge CROSS-uid writes in the rootless userns —
 #                          so cross-uid file writes still run AS their owner, needing no cap.)
-FENCE_web="--cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add NET_BIND_SERVICE --cap-add DAC_OVERRIDE"
+FENCE_web="--security-opt label=disable --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add NET_BIND_SERVICE --cap-add DAC_OVERRIDE"
 HEALTH_web='kd-health'
 # self-diagnosing (H4): a RED carries its own evidence — boot markers, the service census, guacd's
 # loopback door, and the deep-liveness HTTP code with the service logs that explain a non-200.
