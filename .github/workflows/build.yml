@@ -33,6 +33,9 @@ jobs:
           - target: grd
             cfile: lineage-grd/Containerfile
             image: knowledge-desktop-grd
+          - target: web
+            cfile: lineage-web/Containerfile
+            image: knowledge-desktop-web
           - target: probe
             cfile: gate/probe/Containerfile
             image: knowledge-desktop-probe

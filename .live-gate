@@ -83,9 +83,13 @@ CFILE_web="lineage-web/Containerfile"
 #   CHOWN                  the entrypoint mkdirs /run/postgresql (postgres' socket dir, absent
 #                          without systemd-tmpfiles) and chowns it to kdweb
 #   NET_BIND_SERVICE       Caddy (root) binds the :443 public door (A2) — a privileged port
-# NB: DAC_OVERRIDE is deliberately NOT added — it is ineffective for cross-uid writes in the rootless
-# userns (verified), so every file write is instead done AS its owner (kdweb), needing no cap.
-FENCE_web="--cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add NET_BIND_SERVICE"
+#   DAC_OVERRIDE           shadow-utils (groupadd/useradd in the WP-11 provisioning boot path)
+#                          write root's OWN 0000-mode /etc/{g,}shadow — the same-uid DAC bypass
+#                          IS userns-effective and REQUIRED there. (The earlier "deliberately NOT
+#                          added" note over-generalized the verified finding, which is narrower:
+#                          DAC_OVERRIDE cannot bridge CROSS-uid writes in the rootless userns —
+#                          so cross-uid file writes still run AS their owner, needing no cap.)
+FENCE_web="--cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add NET_BIND_SERVICE --cap-add DAC_OVERRIDE"
 HEALTH_web='kd-health'
 # self-diagnosing (H4): a RED carries its own evidence — boot markers, the service census, guacd's
 # loopback door, and the deep-liveness HTTP code with the service logs that explain a non-200.
