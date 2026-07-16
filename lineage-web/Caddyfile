@@ -1,0 +1,31 @@
+# knowledge-desktop web door — Caddyfile (DESIGN §3). The ONE public door (A1/A2/A5):
+# HTTPS on :443, terminating TLS and reverse-proxying to the loopback Tomcat. NO :80 ever
+# (A2 — the ACME challenge is TLS-ALPN-01 on 443; there is no cleartext HTTP listener).
+#
+# TLS: this shipped default is the GATE / self-signed posture — `tls internal` (a container-local
+# CA). The site is NAMED for the loopback (localhost + 127.0.0.1) rather than a bare `:443`: a
+# port-only `tls internal` site has NO hostname to issue a leaf for, so the handshake fails
+# "tlsv1 internal error" (proven empirically) — naming the site gives the internal issuer its
+# subjects. This serves the loopback deep-liveness health check (kd-health hits
+# https://127.0.0.1:443). Production ACME on the roster's public DNS name is a DEPLOY-TIME rewrite
+# (a later WP swaps the site address + issuer from the roster); THIS entrypoint ships it as-is.
+{
+	admin off
+	auto_https disable_redirects
+	# do not try to install the internal CA into the system trust store (needs keytool/certutil,
+	# absent here, and unneeded: the health check uses -k and real clients trust via ACME at prod)
+	skip_install_trust
+	# no cleartext :80 listener; move Caddy's internal HTTP port off 80 (A2). tls internal needs
+	# no HTTP challenge, so nothing actually binds this — it only keeps :80 unused.
+	http_port 8081
+}
+
+https://localhost, https://127.0.0.1 {
+	tls internal
+	encode zstd gzip
+	# the real client IP reaches Tomcat's RemoteIpValve via XFF (internalProxies=127.0.0.1)
+	reverse_proxy 127.0.0.1:8080 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto https
+	}
+}

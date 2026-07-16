@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# kd-web-sync (WP-10; DESIGN §3 [ADJ-11]) — the WEB DOOR's provisioning CLI. Driven ONLY by
+# kd-provision (the sole roster parser); this never reads the roster. It reconciles the
+# Guacamole Postgres auth DB (the jdbc-postgresql extension schema) to the roster kd-provision
+# passes it, one user at a time, with secrets ON STDIN (E1 — never argv/env).
+#
+# Verbs (kd-provision's per-user interface):
+#   apply-user  <user>   phrase on stdin -> upsert the guac user with a salted-SHA256 verifier
+#                        (Guacamole's native scheme; the memory-hard-KDF gap is disclosed E6 R9,
+#                        bounded by A3 TOTP + A4 ban + loopback-only DB). Idempotent.
+#   disable-user <user>  mark the guac user disabled — **PRESERVING the TOTP enrollment rows**
+#                        (the D5 keystone: a re-enabled user keeps their authenticator; verified
+#                        against the guacamole_user.disabled flag + the guacamole_user_attribute
+#                        totp rows, which are NOT touched).
+#   enable-user <user>   clear the disabled flag (reinstatement).
+#
+# Auth to Postgres is peer/loopback (127.0.0.1, DESIGN §3 [ADJ-4] — pgJDBC is TCP-only); this
+# runs inside the web container as the DB owner. Salt+hash match Guacamole's exact scheme so the
+# webapp verifies the row: password_hash = SHA-256( UTF8(password) || password_salt ), salt =
+# 32 random bytes stored as bytea. (Guacamole hex-encodes the salt into the UTF-8 it hashes —
+# replicated below. HONEST TIER (N4/N5): NO shipped gate performs a login round-trip today —
+# the gate boots skeleton mode with zero users; the live login/TOTP proof sits at the
+# manual/browser tier until the WP-02 roster fixtures arm a gate login probe. Until then this
+# scheme's correctness rests on source-verified replication, not a runtime assertion.)
+set -euo pipefail
+
+PGHOST="${KD_PGHOST:-127.0.0.1}"
+PGDATABASE="${KD_PGDATABASE:-guacamole_db}"
+PGUSER="${KD_PGUSER:-guacamole}"
+export PGHOST PGDATABASE PGUSER
+psql_q(){ psql -v ON_ERROR_STOP=1 -qtAX "$@"; }
+
+usage(){ echo "usage: kd-web-sync apply-user|disable-user|enable-user <user>  (apply: phrase on stdin)" >&2; exit 2; }
+[ $# -eq 2 ] || usage
+verb="$1"; user="$2"
+[ -n "$user" ] || usage
+# entity/user names are validated upstream by kd-provision's schema; belt against SQL identifiers
+case "$user" in *[!a-z0-9-]*) echo "kd-web-sync: bad user (value-free)" >&2; exit 1;; esac
+
+ensure_entity(){ # returns the entity_id for a USER entity, creating it if absent
+    psql_q -c "INSERT INTO guacamole_entity (name, type) VALUES ('$user','USER')
+               ON CONFLICT (name, type) DO NOTHING;"
+    psql_q -c "SELECT entity_id FROM guacamole_entity WHERE name='$user' AND type='USER';"
+}
+
+case "$verb" in
+apply-user)
+    # the A13 phrase, stdin only (E1). The `|| true` matters: under set -e a bare read dies
+    # SILENTLY (rc 1, no message) on EOF/empty stdin, making the guard below unreachable for
+    # exactly the case it exists for (fitness note).
+    IFS= read -r phrase || true
+    [ -n "${phrase:-}" ] || { echo "kd-web-sync: empty phrase on stdin" >&2; exit 1; }
+    eid="$(ensure_entity)"
+    # Guacamole scheme: salt = 32 random bytes; the value hashed is UTF8( password || UPPER(hex(salt)) )
+    salt_hex="$(openssl rand -hex 32)"
+    hash_hex="$(printf '%s%s' "$phrase" "$(printf '%s' "$salt_hex" | tr 'a-f' 'A-F')" \
+                | openssl dgst -sha256 -binary | xxd -p -c 256)"
+    psql_q <<SQL
+INSERT INTO guacamole_user (entity_id, password_hash, password_salt, password_date, disabled)
+VALUES ($eid, decode('$hash_hex','hex'), decode('$salt_hex','hex'), CURRENT_TIMESTAMP, FALSE)
+ON CONFLICT (entity_id) DO UPDATE SET
+  password_hash = EXCLUDED.password_hash,
+  password_salt = EXCLUDED.password_salt,
+  password_date = CURRENT_TIMESTAMP,
+  disabled      = FALSE;
+SQL
+    echo "kd-web-sync: applied web identity for $user"
+    ;;
+disable-user)
+    # D5 KEYSTONE: set disabled, but DO NOT DELETE the user row or its TOTP attribute rows —
+    # a reinstated user keeps their second-factor enrollment (guacamole_user_attribute:
+    # guac-totp-key-secret / -confirmed remain untouched).
+    psql_q -c "UPDATE guacamole_user u SET disabled = TRUE
+               FROM guacamole_entity e
+               WHERE u.entity_id = e.entity_id AND e.name='$user' AND e.type='USER';"
+    echo "kd-web-sync: disabled web identity for $user (TOTP enrollment preserved, D5)"
+    ;;
+enable-user)
+    psql_q -c "UPDATE guacamole_user u SET disabled = FALSE
+               FROM guacamole_entity e
+               WHERE u.entity_id = e.entity_id AND e.name='$user' AND e.type='USER';"
+    echo "kd-web-sync: re-enabled web identity for $user"
+    ;;
+*) usage ;;
+esac
