@@ -39,13 +39,19 @@ echo "kd-entrypoint: starting xrdp (loopback-first, ADJ-8)"
 /usr/sbin/xrdp --nodaemon &
 pids+=($!); XRDP_PID=$!
 
-# wait for the RDP loopback door before provisioning prestarts sessions through it
-for _ in $(seq 1 30); do
-    timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/3389' 2>/dev/null && break
+# Give the RDP loopback door time to come up before provisioning prestarts sessions through it.
+# NON-FATAL (F2): xrdp's first boot generates RSA keys, which can be slow on a loaded shared host
+# — a hard exit here made a slow keygen a RED (the entrypoint died before kd-health could report).
+# kd-health is the health authority: it independently gates on a real :3389 answer, and the host
+# gate's poll budget covers a slow first boot. So we WAIT (generously) but never exit — boot-ok is
+# still set, and the supervisor keeps xrdp alive while kd-health reports the truth until it answers.
+door_up=0
+for _ in $(seq 1 60); do
+    if timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/3389' 2>/dev/null; then door_up=1; break; fi
     sleep 1
 done
-timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/3389' 2>/dev/null \
-    || { echo "kd-entrypoint: FATAL — xrdp never answered on loopback :3389"; exit 1; }
+[ "$door_up" = 1 ] || echo "kd-entrypoint: xrdp not yet answering :3389 after 60s — continuing;" \
+    "kd-health will report truth and the supervisor keeps it alive (no fatal exit, F2)"
 
 if [ -e /run/secrets/kd-roster ] || [ -n "${KD_ROSTER:-}" ]; then
     echo "kd-entrypoint: roster present — provisioning (fail-fast on invalid, E2)"
