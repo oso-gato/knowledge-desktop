@@ -68,10 +68,12 @@ HEALTH_SLEEP_grd="6"
 # :443 as root PID 1; default podman caps suffice). Boots WITHOUT a roster -> SKELETON MODE: the
 # gateway comes up with ZERO provisioned users (the schema's default guacadmin is disabled at
 # boot, A12 fail-closed); per-user auth (kd-provision -> kd-web-sync) rides deploy. The gate's
-# truthful bar is DEEP-LIVENESS (N5): an UNAUTHENTICATED API GET traverses the full chain
-# Caddy(TLS) -> Tomcat -> webapp -> Postgres and returns 200, generating ZERO auth failures (so it
-# never self-bans, A4/WD-#11). The live per-user TOTP round-trip (A3/A4/A11) is a MANUAL/browser
-# tier above the gate (disclosed E6) — not asserted here.
+# truthful bar is kd-health's TWO legs (N4/N5): (1) an UNAUTHENTICATED API GET proves
+# Caddy(TLS) -> Tomcat -> webapp servlet (200, zero auth failures — never self-bans, A4/WD-#11;
+# /api/languages serves classpath resources, so it proves NOTHING about the DB); (2) a real
+# `SELECT 1` on guacamole_db over the unix socket proves postgres answers queries. The live
+# per-user TOTP round-trip (A3/A4/A11) is a MANUAL/browser tier above the gate (disclosed E6)
+# — not asserted here.
 CFILE_web="lineage-web/Containerfile"
 # Cap add-backs over the gate's --cap-drop=ALL floor (all userns-scoped, a subset of podman's own
 # defaults — the same discipline as FENCE_grd). The web door is bash-PID-1 (NO systemd), so it needs

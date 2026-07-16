@@ -18,8 +18,10 @@
 # runs inside the web container as the DB owner. Salt+hash match Guacamole's exact scheme so the
 # webapp verifies the row: password_hash = SHA-256( UTF8(password) || password_salt ), salt =
 # 32 random bytes stored as bytea. (Guacamole hex-encodes the salt into the UTF-8 it hashes —
-# replicated below so a row this writes authenticates in the running webapp; asserted at the
-# host gate by a real login round-trip, N5.)
+# replicated below. HONEST TIER (N4/N5): NO shipped gate performs a login round-trip today —
+# the gate boots skeleton mode with zero users; the live login/TOTP proof sits at the
+# manual/browser tier until the WP-02 roster fixtures arm a gate login probe. Until then this
+# scheme's correctness rests on source-verified replication, not a runtime assertion.)
 set -euo pipefail
 
 PGHOST="${KD_PGHOST:-127.0.0.1}"
@@ -43,8 +45,11 @@ ensure_entity(){ # returns the entity_id for a USER entity, creating it if absen
 
 case "$verb" in
 apply-user)
-    IFS= read -r phrase   # the A13 phrase, stdin only (E1)
-    [ -n "$phrase" ] || { echo "kd-web-sync: empty phrase on stdin" >&2; exit 1; }
+    # the A13 phrase, stdin only (E1). The `|| true` matters: under set -e a bare read dies
+    # SILENTLY (rc 1, no message) on EOF/empty stdin, making the guard below unreachable for
+    # exactly the case it exists for (fitness note).
+    IFS= read -r phrase || true
+    [ -n "${phrase:-}" ] || { echo "kd-web-sync: empty phrase on stdin" >&2; exit 1; }
     eid="$(ensure_entity)"
     # Guacamole scheme: salt = 32 random bytes; the value hashed is UTF8( password || UPPER(hex(salt)) )
     salt_hex="$(openssl rand -hex 32)"

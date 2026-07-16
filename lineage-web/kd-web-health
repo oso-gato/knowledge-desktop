@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# kd-web-health (WEB DOOR; DESIGN §3 [ADJ-6], WP-10) — TRUTHFUL deep-liveness (F2). NOT a
-# login probe (a failed login self-bans, A4/WD-#11): an UNAUTHENTICATED GET of a webapp API
-# endpoint asserts a well-formed response through the FULL chain Caddy->Tomcat->webapp->DB,
-# generating ZERO auth failures so it never accumulates ban state and a banned source never
-# flips health.
+# kd-web-health (WEB DOOR; DESIGN §3 [ADJ-6], WP-10) — TRUTHFUL health (F2), two independent
+# legs, each probing exactly what it can prove (N4 — the earlier wording claimed the GET
+# "traverses ->DB", which is FALSE: /api/languages serves classpath translation resources and
+# the jdbc extension's pooled datasource connects lazily, so that leg proves NOTHING about
+# postgres; the fitness review caught it):
+#   LEG 1 (HTTP path): an UNAUTHENTICATED GET of /guacamole/api/languages through the public
+#     door — proves Caddy TLS -> Tomcat -> webapp servlet, generating ZERO auth failures so it
+#     never accumulates ban state (A4/WD-#11) and a banned source never flips health.
+#   LEG 2 (DB path): a real `SELECT 1` against guacamole_db as kdweb over the unix socket —
+#     proves postgres is up AND answering queries (the thing logins actually need).
 set -u
 fail(){ echo "kd-web: UNHEALTHY — $*"; exit 1; }
 
@@ -15,10 +20,14 @@ pgrep -x caddy >/dev/null || fail "caddy not running"
 # guacd control port answers on loopback
 timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/4822' 2>/dev/null || fail "guacd not answering :4822"
 
-# deep liveness: the webapp's patch/language API returns 200 + JSON through Tomcat (no auth,
-# no ban state). This exercises Caddy TLS -> Tomcat -> webapp -> (guacamole servlet) end-to-end.
+# LEG 2 — the DB answers a real query (peer auth over the socket as kdweb; no password, no TCP)
+timeout 5 runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c 'SELECT 1' \
+    >/dev/null 2>&1 || fail "postgres not answering SELECT 1 on guacamole_db"
+
+# LEG 1 — the webapp answers through the public door (Caddy TLS -> Tomcat -> servlet; NO DB
+# coverage claimed — that is LEG 2's job)
 code="$(curl -fsS -k -o /dev/null -w '%{http_code}' \
     'https://127.0.0.1:443/guacamole/api/languages' 2>/dev/null || echo 000)"
-[ "$code" = 200 ] || fail "web deep-liveness GET returned $code (want 200) via Caddy->Tomcat"
+[ "$code" = 200 ] || fail "web GET returned $code (want 200) via Caddy->Tomcat"
 
 exit 0

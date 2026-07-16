@@ -110,11 +110,15 @@ else
     log "WARN: webapp not live within 120s — entering supervise; kd-health stays UNHEALTHY until it answers"
 fi
 
-# supervise (F2): a dead core service is restarted; a still-deploying webapp is marked live when
-# it finally answers. kd-health reports the truth throughout.
+# supervise (F2): a dead core service is restarted — POSTGRES INCLUDED (the fitness review's
+# concrete failure mode: postgres dies post-boot, everything else alive, logins dead and nothing
+# restarts it; kd-health's DB leg now catches it AND this loop now heals it). A still-deploying
+# webapp is marked live when it finally answers. kd-health reports the truth throughout.
 while :; do
     sleep 10 & wait $! || true
     if [ ! -f "$RUN/boot-ok" ] && webapp_live; then touch "$RUN/boot-ok"; log "web door reached liveness (late) — boot-ok set"; fi
+    run_pg /usr/bin/pg_ctl -D "$PGDATA" status >/dev/null 2>&1 \
+        || { log "postgres died — restart (F2)"; run_pg /usr/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/pg.log" -w -t 60 start >/dev/null 2>&1 || log "postgres restart FAILED (kd-health stays red)"; }
     kill -0 "$GUACD_PID"  2>/dev/null || { log "guacd died — restart (F2)";  run_pg /opt/guacamole/sbin/guacd -b 127.0.0.1 -l 4822 -f >>"$RUN/guacd.log" 2>&1 & GUACD_PID=$!; }
     kill -0 "$CADDY_PID"  2>/dev/null || { log "caddy died — restart (F2)";  caddy run --config /etc/caddy/Caddyfile --adapter caddyfile >>"$RUN/caddy.log" 2>&1 & CADDY_PID=$!; }
     kill -0 "$TOMCAT_PID" 2>/dev/null || { log "tomcat died — restart (F2)"; run_pg env JAVA_HOME="$JAVA_HOME" GUACAMOLE_HOME="$GUACAMOLE_HOME" "$CATALINA_HOME/bin/catalina.sh" run >>"$RUN/tomcat.log" 2>&1 & TOMCAT_PID=$!; }
