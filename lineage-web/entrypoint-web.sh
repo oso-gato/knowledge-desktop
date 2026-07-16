@@ -105,15 +105,11 @@ fi
 # (same roster history + same rule => same uids; divergence is an E6-disclosed residual probed
 # at WP-20). Desktop-only hooks (kd-cred, kd-session-enable) are absent in this image —
 # kd-provision logs each loudly and continues (its designed optional-hook contract).
-# Roster semantics mirror L1 (E6 R18): present+invalid => fail-fast; ABSENT => skeleton mode.
-if [ -e /run/secrets/kd-roster ] || [ -n "${KD_ROSTER:-}" ]; then
-    log "roster present — provisioning web identities + tiles (fail-fast on invalid, E2)"
-    /usr/libexec/kd/kd-provision || exit $?
-else
-    log "SKELETON MODE — no roster mounted; provisioning skipped; the gateway serves with zero" \
-        "users (guacadmin disabled at boot, A12 fail-closed). Disclosed pre-WP-02 gate residual (E6 R18)."
-    touch /run/kd/skeleton-mode
-fi
+# STRICT E2 (WP-02 — skeleton mode RETIRED, E6 R18 deleted): provision UNCONDITIONALLY;
+# kd-provision exits rc=3 when the roster is absent/unreadable (fail-fast, no zero-user boot). The
+# web gateway REFUSES TO SERVE without a roster — the web_negsec gate run (PR 3) asserts exactly this.
+log "provisioning web identities + tiles from the roster (strict E2 — fail-fast on absent/invalid)"
+/usr/libexec/kd/kd-provision || exit $?
 
 # ---- 2. guacd (loopback; vendored FreeRDP via rpath) ----
 log "starting guacd"

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# kd-vnc-check <port> <good_phrase> <cross_phrase> (WP-02 gate probe) — asserts the A13 VNC-door
+# contract (V8) on a running x0vncserver via kd-vnc-login, RC-EXACT so a connection error never
+# masquerades as a reject:
+#   good_phrase        → ACCEPT (rc 0)
+#   good's first 8     → ACCEPT (rc 0) — the A13 truncation (RFB 8-char limit; V8 corollary)
+#   cross_phrase       → CLEAN REJECT (rc EXACTLY 1, not the rc-2 protocol-error) — A12 per-door
+#   garbage            → CLEAN REJECT (rc 1)
+# Generic: the image ships NO fixture values; the .live-gate PROBE supplies the port + phrases.
+set -u
+[ $# -eq 3 ] || { echo "usage: kd-vnc-check <port> <good_phrase> <cross_phrase>" >&2; exit 2; }
+port="$1"; good="$2"; cross="$3"; V=/usr/libexec/kd/kd-vnc-login
+accept(){ "$V" 127.0.0.1 "$port" "$1" >/dev/null 2>&1; }
+reject(){ "$V" 127.0.0.1 "$port" "$1" >/dev/null 2>&1; [ $? -eq 1 ]; }
+accept "$good"       || { echo "kd-vnc-check: good phrase REJECTED on :$port (login broken)"; exit 1; }
+accept "${good:0:8}" || { echo "kd-vnc-check: first-8 truncation REJECTED on :$port (V8 broken)"; exit 1; }
+reject "$cross"      || { echo "kd-vnc-check: cross-user phrase NOT cleanly rejected on :$port (A12 broken)"; exit 1; }
+reject "zzzzzzzz"    || { echo "kd-vnc-check: garbage NOT cleanly rejected on :$port"; exit 1; }
+echo "kd-vnc-check: :$port A13/V8 matrix GREEN (accept good+first-8; reject cross+garbage, rc-exact)"
