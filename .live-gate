@@ -19,7 +19,9 @@
 # deleted); the negative-secrets/admin-only/bad-admin RUNS land as sibling targets in PR 3. grd
 # stays a bare systemd skeleton until WP-08. Order: grd, xrdp, web LAST (the verdict TAIL keeps the
 # last target's self-diagnosis).
-LIVE_GATE_TARGETS="grd xrdp web"
+# Order: the verdict TAIL keeps the LAST target's self-diagnosis, so the CHURN target goes LAST —
+# WP-08 makes that grd (the first #23 RED proved it: grd's failure was drowned by web's GREEN tail).
+LIVE_GATE_TARGETS="xrdp web grd"
 
 # ---- LINEAGE 1: xrdp (WP-02: real-roster provisioned boot + per-user identity proof) ----
 CFILE_xrdp="lineage-xrdp/Containerfile"
