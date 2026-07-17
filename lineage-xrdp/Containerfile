@@ -39,9 +39,14 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         acl procps-ng glibc-langpack-en \
         openssh-server mosh tmux \
         podman crun passt fuse-overlayfs \
+        git-core gh \
     && dnf clean all
 # WP-13 (A8 terminal door): openssh-server (key-only, config below) + mosh (roaming UDP) + tmux
-# (the one persistent per-user session). git-core arrives with the toolset (WP-15).
+# (the one persistent per-user session).
+# WP-13 (agents, G1/G2): git-core + gh (GitHub CLI, class-(a) Fedora) — the per-user git identity +
+# GitHub credential kd-agent-env installs, and the resident agent's GitHub operations, run git + gh.
+# Named EXPLICITLY here (weak deps off): the WP-15 toolset installs no git/gh, so neither may be
+# assumed as an incidental dependency (N2).
 # WP-16 (B3 nested rootless podman): podman + crun (OCI runtime) + passt/pasta (rootless net) +
 # fuse-overlayfs (the PINNED mount program — determinism across host classes + the gate, [ADJ-12]).
 # shadow-utils (already above) provides newuidmap/newgidmap for the per-user subuid bands
@@ -134,6 +139,7 @@ COPY lineage-xrdp/xorg.conf         /etc/X11/xrdp/xorg.conf
 COPY shared/entrypoint-l1.sh        /usr/local/bin/kd-entrypoint
 COPY shared/kd-health               /usr/local/bin/kd-health
 COPY shared/kd-provision            /usr/libexec/kd/kd-provision
+COPY shared/kd-agent-env            /usr/libexec/kd/kd-agent-env
 COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
 COPY lineage-xrdp/kd-cred           /usr/libexec/kd/kd-cred
 COPY lineage-xrdp/kd-session-enable /usr/libexec/kd/kd-session-enable
@@ -142,7 +148,7 @@ COPY lineage-xrdp/doors-agent       /usr/libexec/kd/doors-agent
 COPY gate/probe/kd-vnc-login        /usr/libexec/kd/kd-vnc-login
 COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
 RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
-        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
+        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
         /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check
 
