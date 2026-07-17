@@ -3,6 +3,9 @@
 # kd-provision (runuser). Args: <vault_repo_url>. Three jobs, each fail-SAFE (never stops the box):
 #   1. CLONE ~/Vault if absent (uses the user's own git credential helper — E1; a local/file remote
 #      needs none, which is the gate path). Unreachable ⇒ log alert, leave for next boot to retry.
+#      A pre-existing NON-clone ~/Vault (e.g. notes written while the first clone was unreachable)
+#      is NEVER deleted: the clone is WITHHELD + a distinct alert raised (data preserved), and the
+#      clone itself lands via a sibling temp dir, so failure cleanup removes only what THIS run made.
 #   2. SEED the broadened .gitignore (per-device volatile Obsidian state must never sync — E4).
 #   3. ASSERT the remote forbids history rewrite + branch deletion, and gate sync on it:
 #        confirmed protected     → touch ~/.kd/vault-ready   (sync allowed)
@@ -33,10 +36,23 @@ esac
 
 # --- 1. clone if absent ---------------------------------------------------------------------------
 if [ ! -d "$VAULT/.git" ]; then
-    if git clone -q "$REPO" "$VAULT" 2>/dev/null; then
+    # NEVER destroy pre-existing user data at the vault path: if the first clone was unreachable the
+    # box still serves ("will retry" alert) and the user may have written notes into ~/Vault since.
+    # rmdir folds away only an EMPTY leftover dir — it cannot remove content by construction.
+    rmdir "$VAULT" 2>/dev/null || true
+    if [ -e "$VAULT" ]; then
+        rm -f "$READY" 2>/dev/null || true
+        alert "Your vault folder already contains files that are not from the vault repository — sync is paused to protect them. Move them aside so the vault can initialize, then copy them back in."
+        LOG "GUARD: $VAULT holds pre-existing non-clone content — clone WITHHELD, data preserved (box serves)"
+        exit 0
+    fi
+    # Clone into a sibling temp dir, then move into place (-T: never nest into a dir that appeared
+    # meanwhile) — the failure path below can then only ever remove what THIS run created.
+    TMP="$(mktemp -d "$VAULT.cloning.XXXXXX" 2>/dev/null)" || { LOG "cannot create temp dir beside $VAULT"; exit 0; }
+    if git clone -q "$REPO" "$TMP" 2>/dev/null && mv -T "$TMP" "$VAULT" 2>/dev/null; then
         LOG "cloned $VAULT"
     else
-        rm -rf "$VAULT" 2>/dev/null || true          # no half-clone left behind
+        rm -rf "$TMP" 2>/dev/null || true            # no half-clone left behind (temp dir only)
         rm -f "$READY" 2>/dev/null || true
         alert "Could not reach the vault repository — sync is paused. It will retry automatically."
         LOG "clone failed (unreachable?) — will retry next boot (fail-safe, box serves)"

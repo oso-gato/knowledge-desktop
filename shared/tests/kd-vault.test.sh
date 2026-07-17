@@ -3,7 +3,8 @@
 # every guard is provable with local bare remotes + clones — NO container/nested engine needed.
 # Covers kd-vault-sync (clean sync, stop-flag, vault-ready gate, local+inbound mass-delete guards,
 # conflict abort+restore, ff + divergent-clean merge, unreachable fail-safe) and kd-vault-init
-# (clone, .gitignore seed + effect, ruleset confirmed/absent/unverified).
+# (clone, .gitignore seed + effect, ruleset confirmed/absent/unverified, F3 pre-existing-vault
+# preservation).
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"          # shared/
 SYNC="$HERE/kd-vault-sync"; INIT="$HERE/kd-vault-init"; DRIVER="$HERE/kd-vault-driver"
@@ -224,6 +225,35 @@ mkgh '"pull_request"'
 if classify; then no "F2: unprotected repo misclassified as protected"; else ok "F2: no nff/deletion => unprotected"; fi
 mkgh '"non_fast_forward"'
 if classify; then no "F2: nff-only misclassified as protected"; else ok "F2: nff-only (missing deletion) => unprotected (BOTH required)"; fi
+
+# ============================================================================================
+echo "== F3 regression: a pre-existing NON-clone ~/Vault is NEVER deleted by init =="
+# The fitness-confirmed data-destruction path: remote unreachable at first provision (T3) => box
+# serves, user writes notes into ~/Vault; next boot re-runs init; the old code's clone-failure
+# cleanup was 'rm -rf $VAULT' — erasing every unsynced note (clone ALWAYS fails on a non-empty
+# destination, reachable or not). Now: pre-existing non-clone content WITHHOLDS the clone (data
+# preserved, sync paused, distinct alert), and the clone lands via a sibling temp dir so failure
+# cleanup can only remove what init itself created. These FAIL against the old code.
+R="$WORK/f3.git"; V="$WORK/f3v"; RD="$WORK/f3rd"; mkremote "$R" 1 3
+mkdir -p "$V"; echo "unsynced precious note" > "$V/precious.md"
+KD_VAULT_DIR="$V" KD_VAULT_READY="$RD" KD_VAULT_GITIGNORE_SRC="$GITIGNORE" "$INIT" "$R" >/dev/null 2>&1; rc=$?
+chk "F3: reachable remote + pre-existing vault => rc 0 (box serves)" "[ $rc -eq 0 ]"
+chk "F3: pre-existing note SURVIVES byte-identical" "[ \"\$(cat '$V/precious.md' 2>/dev/null)\" = 'unsynced precious note' ]"
+chk "F3: clone WITHHELD (no .git clobbered over the data)" "[ ! -e '$V/.git' ]"
+chk "F3: vault-ready WITHHELD while unreconciled" "[ ! -e '$RD' ]"
+# the exact reproduced scenario: remote STILL unreachable on the retry boot => data intact
+V="$WORK/f3u"; RD="$WORK/f3urd"; mkdir -p "$V"; echo "unsynced precious note" > "$V/precious.md"
+KD_VAULT_DIR="$V" KD_VAULT_READY="$RD" KD_VAULT_GITIGNORE_SRC="$GITIGNORE" "$INIT" "$WORK/nope.git" >/dev/null 2>&1; rc=$?
+chk "F3: unreachable remote + pre-existing vault => rc 0, note survives" "[ $rc -eq 0 ] && [ -f '$V/precious.md' ]"
+# a pre-existing EMPTY dir must NOT block the clone (rmdir folds it away, then normal T1 behaviour)
+R2="$WORK/f3e.git"; V="$WORK/f3ev"; RD="$WORK/f3erd"; mkremote "$R2" 1 2; mkdir -p "$V"
+KD_VAULT_DIR="$V" KD_VAULT_READY="$RD" KD_VAULT_GITIGNORE_SRC="$GITIGNORE" "$INIT" "$R2" >/dev/null 2>&1
+chk "F3: pre-existing EMPTY dir does not block the clone" "[ -d '$V/.git' ]"
+chk "F3: empty-dir clone still confirms protection (vault-ready set)" "[ -e '$RD' ]"
+# a failed clone leaves NO temp sibling behind
+V="$WORK/f3t"; RD="$WORK/f3trd"
+KD_VAULT_DIR="$V" KD_VAULT_READY="$RD" KD_VAULT_GITIGNORE_SRC="$GITIGNORE" "$INIT" "$WORK/nope.git" >/dev/null 2>&1
+chk "F3: failed clone leaves no temp sibling dir" "! ls -d '$V'.cloning.* >/dev/null 2>&1"
 
 echo
 echo "== RESULT: $pass passed, $fail failed =="
