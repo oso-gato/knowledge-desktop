@@ -1,0 +1,29 @@
+# gnome-shell-headless.service (WP-08, L2) — the per-user HEADLESS Wayland compositor, a
+# `systemd --user` unit (→ /etc/systemd/user/). This IS the session: gnome-shell in --mode=user
+# is its own session manager — there is deliberately NO gnome-session on this lineage (DESIGN §2
+# reconcile note; its autostart machinery fights the linger-only model). Brought up per user by
+# the lingering user manager at boot (globally enabled into default.target; kd-session-enable
+# turns the linger on per provisioned user — C3 warm sessions, unaided by any login).
+#
+# Software rendering throughout (V16, B4-fallback): LIBGL_ALWAYS_SOFTWARE + llvmpipe give mutter
+# a surfaceless EGL context with no /dev/dri; grd screencasts it via pipewire. The socket name is
+# pinned (wayland-grd) so the grd override + every app (WAYLAND_DISPLAY in environment.d) agree
+# on it with no runtime discovery.
+[Unit]
+Description=GNOME Shell (headless Wayland compositor for the RDP/VNC doors)
+Wants=graphical-session.target
+Before=graphical-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-grd
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_CURRENT_DESKTOP=GNOME
+Environment=LIBGL_ALWAYS_SOFTWARE=1
+Environment=GALLIUM_DRIVER=llvmpipe
+ExecStart=/usr/bin/gnome-shell --wayland --headless --wayland-display wayland-grd --mode=user
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

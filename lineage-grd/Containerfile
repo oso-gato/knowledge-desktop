@@ -1,30 +1,168 @@
 # knowledge-desktop — LINEAGE 2: GRD / Wayland / GNOME (DESIGN.md §2)
-# WP-01 SKELETON: systemd-PID-1 from the first commit — this lineage's init contract is
-# structural (per-user lingering user managers; DESIGN §2), and the nested dev engine cannot
-# boot PID-1 systemd, so ALL runtime proof for this lineage is host-gate tier (CLAUDE.md).
-# The GNOME/GRD stack lands per BUILDPLAN (WP-08 onward). Base digest-pinned (N1).
+# WP-08 WALKING SKELETON: a real headless GNOME desktop image — per-user lingering
+# `systemd --user` managers each running `gnome-shell --headless` (Wayland, llvmpipe software
+# rendering) + `gnome-remote-desktop-headless` serving RDP+VNC on per-user fixed ports; systemd
+# PID 1; kd-provision ENABLED at boot (strict E2). Base digest-pinned (N1).
+#
+# DESIGN-RECONCILE NOTES (§2 deviations, recorded in DESIGN.md with this PR):
+#   * NO gnome-session: `gnome-shell --headless --mode=user` IS the session manager here —
+#     gnome-session adds autostart machinery that fights the linger-only model (source-verified
+#     against gnome-remote-desktop 50 + the reference headless-GNOME-over-RDP recipe).
+#   * NO Xwayland: the toolset is pure-Wayland; mutter neither Requires nor Recommends it.
+#   * NO mesa-vulkan-drivers: GTK4 is forced onto llvmpipe GL via GSK_RENDERER=gl
+#     (/etc/environment.d/30-kd-display.conf). Named fallback: if apps crash VK_ERROR_DEVICE_LOST
+#     at the gate, add mesa-vulkan-drivers (lavapipe) — one line.
+#   * NO gnome-keyring/GDM/libva (DESIGN §2: headless file-backend creds; GPU encode not required).
+#
+# Package justifications (N2 — capability-relative minimalism, weak deps off):
+#   systemd               PID 1 (ships systemd-logind statically wanted)
+#   dbus-broker           the system bus (logind) + per-user session bus at /run/user/$UID/bus.
+#                         MANDATORY-EXPLICIT: only a weak Recommends of systemd, so weak-deps-off
+#                         never pulls it — its absence is why the WP-01 skeleton sat `degraded`
+#   gnome-shell           the leaf: headless Wayland compositor + session manager; hard-pulls
+#                         mutter, gjs, gnome-settings-daemon, the xdg portals, dconf
+#   gnome-remote-desktop  the RDP+VNC doors (grdctl + per-user headless daemon); hard-pulls
+#                         pipewire, libei, freerdp-libs
+#   wireplumber           pipewire session manager — PINNED EXPLICIT: the pipewire-session-manager
+#                         virtual has TWO providers and grd's screencast dies (0x904) if dnf
+#                         resolves the deprecated pipewire-media-session instead
+#   nautilus              file management (B1)
+#   mesa-dri-drivers      llvmpipe swrast/kms_swrast — software surfaceless EGL for mutter + grd
+#                         (V16: no /dev/dri required)
+#   xdg-user-dirs         ~/Documents etc — no gnome-session autostart exists to create them
+#   openssl               per-user RDP TLS cert generation (grd RDP will not bind without cert+key)
+#   python3               kd-provision runtime (WP-06)
+#   shadow-utils          useradd/usermod/chpasswd + newuidmap/newgidmap (provisioning; B3 bands)
+#   acl                   setfacl — the D4 shared-folder default ACL
+#   procps-ng             pgrep — kd-health process liveness (F2)
+#   glibc-langpack-en     UTF-8 locale
+#   openssh-server mosh tmux   the A8 terminal door (key-only sshd + roaming mosh + the one
+#                         persistent tmux session; lineage-agnostic, mirrors WP-13 L1)
+#   podman crun passt fuse-overlayfs   B3 nested rootless podman (fuse-overlayfs PINNED, [ADJ-12])
+#   git-core gh           WP-13 agents (kd-agent-env) + E4 vault git ops — named explicitly
+#                         (weak deps off; the toolset layer installs neither)
 ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
 FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
 
-# MINIMAL by design (N2): the skeleton installs ONLY the systemd package. Note that systemd-logind
-# ships INSIDE that package (its binary + the statically-wanted `multi-user.target.wants/
-# systemd-logind.service`), so logind is already present and statically started at skeleton stage.
-# What is NOT present is a system bus: dbus-broker is not installed (it is only a weak Recommends of
-# systemd, so `install_weak_deps=False` never pulls it), so logind cannot reach a bus and fails /
-# hits its start limit. That is EXPECTED at this stage, not a defect — the box still reaches a
-# terminal init state, just `degraded` (one failed unit) rather than `running`, which is exactly
-# why the .live-gate HEALTH accepts running|degraded here (and still rejects starting|offline).
-# dbus-broker — together with the GNOME / gnome-remote-desktop stack that gives the bus a real set
-# of consumers — lands at WP-08, which re-tightens HEALTH back to `running`. Installing dbus-broker
-# NOW, ahead of the consumers that need the bus, would be a package installed before its purpose (N2).
-RUN dnf -y --setopt=install_weak_deps=False install systemd && dnf clean all
+# HEAVY/STABLE-EARLY (churn balance): the dnf layer
+RUN dnf -y --setopt=install_weak_deps=False install \
+        systemd dbus-broker \
+        gnome-shell gnome-remote-desktop wireplumber \
+        nautilus mesa-dri-drivers xdg-user-dirs openssl \
+        python3 shadow-utils acl procps-ng glibc-langpack-en \
+        openssh-server mosh tmux \
+        podman crun passt fuse-overlayfs \
+        git-core gh \
+    && dnf clean all
 
-# WP-06: kd-provision core — shipped INERT (the unit is NOT enabled, so skeleton boot/gate
-# are unchanged); WP-08 enables it with the GRD stack + python3 (see kd-provision.service).
-COPY shared/kd-provision              /usr/libexec/kd/kd-provision
-COPY lineage-grd/kd-cred              /usr/libexec/kd/kd-cred
-COPY lineage-grd/kd-provision.service /usr/lib/systemd/system/kd-provision.service
-RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred
+# ---- systemd unit graph: per-user headless GNOME + grd, boot-enabled -------------------------
+# gnome-shell-headless.service: the per-user headless Wayland compositor (systemd --user unit).
+# grd-headless-override.conf: wires the SHIPPED gnome-remote-desktop-headless.service to the
+#   compositor + pipewire and gives it a default.target [Install] (the shipped unit only installs
+#   into gnome-session.target, which never exists on this gnome-session-less lineage).
+# environment.d: session identity + the llvmpipe/GL display env for EVERY user manager.
+# user-cgroup-fix: defensive drop-in for the F44 systemd-259 user@.service cgroup EBUSY (#41278).
+COPY lineage-grd/gnome-shell-headless.service  /etc/systemd/user/gnome-shell-headless.service
+COPY lineage-grd/grd-headless-override.conf    /etc/systemd/user/gnome-remote-desktop-headless.service.d/override.conf
+COPY lineage-grd/environment.d-20-session.conf /etc/environment.d/20-kd-session.conf
+COPY lineage-grd/environment.d-30-display.conf /etc/environment.d/30-kd-display.conf
+COPY lineage-grd/user-cgroup-fix.conf          /etc/systemd/system/user@.service.d/99-cgroup-fix.conf
+COPY lineage-grd/kd-provision.service          /usr/lib/systemd/system/kd-provision.service
+# gdm is a HARD Requires of Fedora's gnome-shell (verified: the only closure member requiring it
+# — an irreducible hard-dependency closure item, Principle 3: accepted + DISCLOSED). The design's
+# "GDM stays out" is re-scoped to "GDM never RUNS": mask it + default to multi-user.target (this
+# seatless lineage has no system graphical session — the per-user headless sessions ride the
+# lingering user managers). Unmasked, gdm would fail on the missing seat and flunk kd-health's
+# zero-failed-units bar.
+RUN systemctl enable kd-provision.service sshd.service \
+    && systemctl --global enable gnome-shell-headless.service gnome-remote-desktop-headless.service \
+    && systemctl set-default multi-user.target \
+    && systemctl mask gdm.service
+
+# ---- A8 terminal door config (lineage-agnostic; reuses the L1-proven files verbatim) ---------
+COPY lineage-xrdp/sshd-kd.conf /etc/ssh/sshd_config.d/10-kd.conf
+COPY shared/kd-tmux.sh         /etc/profile.d/kd-tmux.sh
+RUN chmod 0644 /etc/ssh/sshd_config.d/10-kd.conf /etc/profile.d/kd-tmux.sh \
+    # fail-closed asserts (N4): the door is key-only and roots-out
+    && grep -q '^PasswordAuthentication no' /etc/ssh/sshd_config.d/10-kd.conf \
+    && grep -q '^PermitRootLogin no' /etc/ssh/sshd_config.d/10-kd.conf
+
+# ================= TOOLSET (WP-15, B2) — identical to L1 except the terminal-default =========
+# Provenance-classed per the tool-install hierarchy (class-a Fedora / class-b vendor gpg repo /
+# class-c pinned download; NEVER COPR/curl|sh). Same set as lineage-xrdp (ONE toolset, two
+# lineages): firefox(a) · ptyxis(a, made DEFAULT below via the GNOME dconf mechanism — NOT the
+# XFCE exo-helpers file, which is L1-only) · code(b, Microsoft repo) · 1password/-cli(b) ·
+# claude-code(b, Anthropic `latest`; DISABLE_UPDATES pins the dnf-managed binary, [ADJ-16]) ·
+# Obsidian(c: official tar.gz, version+sha256 EXACT-pinned, fail-closed).
+COPY shared/toolset/vendor-repos.sh /usr/local/libexec/kd-vendor-repos.sh
+RUN chmod 0755 /usr/local/libexec/kd-vendor-repos.sh && /usr/local/libexec/kd-vendor-repos.sh \
+    && dnf -y --setopt=install_weak_deps=False install \
+        firefox ptyxis code 1password 1password-cli claude-code \
+    && dnf clean all \
+    && rm -f /usr/local/libexec/kd-vendor-repos.sh
+
+# Obsidian (class-c): the URL + sha256 are the pin; a hash mismatch FAILS the build (fail-closed).
+ARG OBSIDIAN_VERSION=1.12.7
+ARG OBSIDIAN_SHA256=fcbe08b111d9c1fdb09b9c08952b06e1c829c62163eba2584c4b4ec859be079d
+ADD https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/obsidian-${OBSIDIAN_VERSION}.tar.gz /tmp/obsidian.tar.gz
+RUN set -eo pipefail \
+    && echo "${OBSIDIAN_SHA256}  /tmp/obsidian.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/obsidian \
+    && tar xzf /tmp/obsidian.tar.gz -C /opt/obsidian --strip-components=1 \
+    && ln -sf /opt/obsidian/obsidian /usr/local/bin/obsidian \
+    && rm -f /tmp/obsidian.tar.gz \
+    && test -x /opt/obsidian/obsidian \
+    # Obsidian's tarball ships chrome-sandbox 0755 (VS Code + 1Password ship 4755) — without the
+    # setuid bit Electron cannot use the SUID sandbox and would need --no-sandbox (V23 forbids it
+    # "surfaced, never silent"). Set it setuid-root to match, giving Obsidian the same sandbox path.
+    && chmod 4755 /opt/obsidian/chrome-sandbox
+
+# Toolset config: Ptyxis as the GNOME default terminal (dconf system db compiled below — the
+# GNOME mechanism, V24); Claude Code update-lock (managed settings); the Obsidian launcher.
+COPY shared/toolset/claude-managed-settings.json /etc/claude-code/managed-settings.json
+COPY shared/toolset/obsidian.desktop             /usr/share/applications/obsidian.desktop
+COPY shared/toolset/kd-gnome-terminal.dconf      /etc/dconf/db/local.d/00-kd-terminal
+COPY shared/toolset/kd-dconf-profile             /etc/dconf/profile/user
+RUN dconf update
+
+# Build-time assertions (N4 — a missing tool/unit FAILS the build, never a broken claim):
+RUN set -e \
+    && for b in firefox ptyxis code 1password obsidian; do command -v "$b" >/dev/null || { echo "TOOLSET MISSING: $b"; exit 1; }; done \
+    && command -v op >/dev/null || { echo "TOOLSET MISSING: 1password-cli (op)"; exit 1; } \
+    && test -x /usr/bin/claude || { echo "TOOLSET MISSING: claude at /usr/bin (dnf-managed)"; exit 1; } \
+    && grep -q '"DISABLE_UPDATES": *"1"' /etc/claude-code/managed-settings.json \
+    # every Electron app's SUID sandbox is setuid (V23: they start WITHOUT --no-sandbox) \
+    && for s in /usr/share/code/chrome-sandbox /opt/1Password/chrome-sandbox /opt/obsidian/chrome-sandbox; do \
+         [ -u "$s" ] || { echo "V23: $s is not setuid — Electron would need --no-sandbox"; exit 1; }; done \
+    # L2-critical asserts: the GRD stack + the unit graph actually assembled \
+    && command -v gnome-shell >/dev/null || { echo "L2 MISSING: gnome-shell"; exit 1; } \
+    && command -v grdctl >/dev/null || { echo "L2 MISSING: grdctl — kd-cred/V17 cannot fire"; exit 1; } \
+    && test -x /usr/bin/dbus-broker || { echo "L2 MISSING: dbus-broker (no system/session bus)"; exit 1; } \
+    && test -f /usr/lib/systemd/user/gnome-remote-desktop-headless.service || { echo "L2 MISSING: shipped grd headless user unit (override target)"; exit 1; } \
+    && test -f /etc/dconf/db/local || { echo "L2: dconf db not compiled (ptyxis default, V24)"; exit 1; } \
+    && test -L /etc/systemd/system/multi-user.target.wants/kd-provision.service || { echo "L2: kd-provision.service not enabled"; exit 1; } \
+    && test -L /etc/systemd/system/multi-user.target.wants/sshd.service || { echo "L2: sshd.service not enabled (A8)"; exit 1; } \
+    && test -L /etc/systemd/user/default.target.wants/gnome-shell-headless.service || { echo "L2: gnome-shell-headless not globally enabled"; exit 1; } \
+    && [ "$(readlink /etc/systemd/system/default.target)" = "/usr/lib/systemd/system/multi-user.target" ] || { echo "L2: default target is not multi-user (seatless lineage)"; exit 1; } \
+    && [ "$(readlink /etc/systemd/system/gdm.service)" = "/dev/null" ] || { echo "L2: gdm not masked — it would fail on the missing seat and flunk kd-health"; exit 1; } \
+    && echo "L2 (WP-08) assembled: GNOME-headless + grd doors + toolset obsidian-${OBSIDIAN_VERSION}"
+
+# CHURN-LATE: repo-owned glue (shared provisioning + the L2 hooks + the reused VNC probes).
+# NOT copied (L1-only): entrypoint-l1.sh, startwm-kd, doors-agent, xorg.conf, shared/kd-health
+# (L1-hardcoded — the L2 kd-health below is its own file), kd-vault-driver. DEFERRED: the vault
+# trio (kd-vault-sync/init/gitignore) rides the WP-17 L2 half (the per-user systemd timer).
+COPY shared/kd-provision            /usr/libexec/kd/kd-provision
+COPY lineage-grd/kd-cred            /usr/libexec/kd/kd-cred
+COPY lineage-grd/kd-session-enable  /usr/libexec/kd/kd-session-enable
+COPY lineage-grd/kd-health          /usr/local/bin/kd-health
+COPY shared/kd-agent-env            /usr/libexec/kd/kd-agent-env
+COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
+COPY gate/probe/kd-vnc-login        /usr/libexec/kd/kd-vnc-login
+COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
+RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
+        /usr/libexec/kd/kd-session-enable /usr/local/bin/kd-health \
+        /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run \
+        /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check
 
 ENTRYPOINT ["/sbin/init"]
 STOPSIGNAL SIGRTMIN+3

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# kd-session-enable (LINEAGE 2; DESIGN §2, WP-08) — kd-provision's pass-2 hook: bring up the
+# user's ONE headless GNOME session + grd doors (C3: sessions come up at boot unaided; A11: one
+# session, every door attaches). Interface mirrors L1: `<user>`, phrase on STDIN — consumed and
+# DISCARDED here (the grd credentials were already installed by kd-cred in pass 1; ignoring the
+# fd entirely would risk a broken-pipe on kd-provision's write). Idempotent: every step is
+# enable/--now or a guarded create, so a re-apply converges (D5 reinstatement included).
+#
+# Pass-2 split (WP-08): everything here needs the user's LIVE session bus (dconf writes,
+# systemctl --user), which exists only after linger starts user@$uid — exactly why kd-cred
+# (pass 1) is credential-only. Per-user FIXED ports, uid-derived — the SAME arithmetic L1's
+# doors-agent committed to (VNC 5900+uid-2000; RDP mirrors it from 3389), so the WP-11 L2 web
+# tiles will agree with the listeners by construction ([ADJ-34]), no runtime lookup anywhere.
+set -euo pipefail
+
+user="${1:?usage: kd-session-enable <user> (phrase on stdin)}"
+uid="$(id -u "$user")" || { echo "kd-session-enable: no such user (value-free)" >&2; exit 1; }
+IFS= read -r _ || true                      # consume stdin; creds already installed (pass 1)
+
+off=$(( uid - 2000 )); rdp_port=$(( 3389 + off )); vnc_port=$(( 5900 + off ))
+
+# C3: the lingering per-user systemd --user manager — the session's foundation
+loginctl enable-linger "$user"
+# wait for the user manager's session bus (user@$uid brings up /run/user/$uid + dbus.socket)
+for _ in $(seq 1 60); do [ -S "/run/user/${uid}/bus" ] && break; sleep 0.5; done
+[ -S "/run/user/${uid}/bus" ] || { echo "kd-session-enable: user bus never appeared for uid ${uid}" >&2; exit 1; }
+
+run_user(){ # run AS the user against their live session bus; non-interactive (no tmux attach)
+    runuser -l "$user" -c "export XDG_RUNTIME_DIR=/run/user/${uid} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus; $*"
+}
+
+# pipewire + wireplumber FIRST — grd's screencast dies (0x904) without a session manager
+run_user 'systemctl --user enable --now pipewire.socket pipewire-pulse.socket wireplumber.service'
+
+# per-user RDP TLS cert, once (grd RDP will NOT bind without cert+key — enforce the ordering:
+# tls + creds + port THEN enable, or the listener never appears and the gate sees no door)
+run_user 'd="$HOME/.local/share/gnome-remote-desktop"; mkdir -p "$d"; [ -f "$d/tls.crt" ] || openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -out "$d/tls.crt" -keyout "$d/tls.key" 2>/dev/null; chmod 600 "$d/tls.key"'
+
+# grd headless RDP: tls → fixed port (negotiate-port=false) → enable LAST
+run_user 'grdctl --headless rdp set-tls-cert "$HOME/.local/share/gnome-remote-desktop/tls.crt"'
+run_user 'grdctl --headless rdp set-tls-key  "$HOME/.local/share/gnome-remote-desktop/tls.key"'
+run_user "grdctl --headless rdp set-port ${rdp_port}"
+run_user "grdctl --headless rdp disable-port-negotiation"
+run_user "grdctl --headless rdp enable"
+# grd headless VNC: password auth (the default 'prompt' would wait forever for a human),
+# fixed port, enable LAST. The password itself landed in pass 1 (kd-cred, A13 first-8).
+run_user "grdctl --headless vnc set-auth-method password"
+run_user "grdctl --headless vnc set-port ${vnc_port}"
+run_user "grdctl --headless vnc disable-port-negotiation"
+run_user "grdctl --headless vnc enable"
+
+# bring up the compositor + grd daemon under the user manager (add-wants belts the image's
+# --global enable; enable --now is idempotent for a running unit)
+run_user 'systemctl --user add-wants default.target gnome-remote-desktop-headless.service'
+run_user 'systemctl --user enable --now gnome-shell-headless.service'
+run_user 'systemctl --user start gnome-remote-desktop-headless.service'
+
+echo "kd-session-enable: ${user} session up (rdp :${rdp_port}, vnc :${vnc_port})"

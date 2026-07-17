@@ -53,31 +53,43 @@ PROBE_xrdp='kd-health && test $(id -u kadm) = 2000 && test $(id -u gw1) = 2001 &
 HEALTH_TRIES_xrdp="30"
 HEALTH_SLEEP_xrdp="6"
 
-# ---- LINEAGE 2: grd (systemd PID 1) ---------------------------------------------------------
+# ---- LINEAGE 2: grd (systemd PID 1; WP-08: the REAL headless-GNOME walking skeleton) --------
 CFILE_grd="lineage-grd/Containerfile"
+# WP-08: the gate boots a REAL PROVISIONED L2 box — the same roster fixture as xrdp/web rides
+# SECRET_ENV → /run/secrets/kd-roster (strict E2: rosterless boot ⇒ kd-provision exit-force ⇒
+# container dies ⇒ RED, V19). The inline roster MUST byte-equal gate/fixtures/roster-mixed.json
+# (gate/lint.sh enforces JSON-equality — single source of truth, identical to SECRET_ENV_xrdp).
+SECRET_MOUNT_grd="/run/secrets/kd-roster"
+SECRET_ENV_grd='{"version":1,"box":{"tailnet_authkey":"tskey-fixture-not-a-real-key","endpoints":{"erebus":{"host":"erebus.tail.fixture","port":22,"user":"core"},"fedora-dev":{"host":"fedora-dev.tail.fixture","port":22,"user":"core"}},"shared_folder":true},"admin":{"username":"kadm","password":"adm-aaaa-0000","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYadm fixture@kd"],"tiles":["erebus","fedora-dev"]},"workers":[{"username":"gw1","password":"gw1-bbbb-1111","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYgw1 fixture@kd"],"tiles":["erebus"]},{"username":"gw2","password":"gw2-cccc-2222"},{"username":"gw3","password":"not-the-a13-shape-at-all"},{"username":"gw1","password":"dup-dddd-3333"},{"username":"root","password":"sys-eeee-4444"},{"username":"gw4","password":"gw4-ffff-5555","color":"mauve"},{"username":"gw5","password":"gw5-gggg-6666","tiles":["mars"]}]}'
 # systemd-PID-1 needs a writable cgroup tree (--cgroupns=host + the rw mount) or it pins at
 # `starting`. /dev/fuse mirrors the lineage's real run contract (nested rootless podman, B3).
-# Cap add-backs on the gate's --cap-drop=ALL floor (all userns-scoped under the rootless engine,
-# a subset of podman's own defaults): systemd-tmpfiles fchownat() on /run/utmp + the journal dirs
-# needs CHOWN/FOWNER/FSETID/DAC_OVERRIDE; the manager signals services with KILL; SETUID/SETGID/
-# SETPCAP cover User= service transitions the WP-08 stack will add. Kept as the standing
-# systemd-PID-1 fence; the set is re-derived (and trimmed if evidence allows) as real services land.
-FENCE_grd="--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --device /dev/fuse --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL"
-# SKELETON contract (N4-honest): the WP-01 grd image installs only systemd, so its claim is
-# "systemd-PID-1 booted to a TERMINAL state", not "every unit is healthy". Accept running OR
-# degraded (both mean the boot transaction completed; a bare skeleton's statically-wanted logind
-# unit fails for lack of its WP-08 stack — expected, not a defect); REJECT starting/offline
-# (genuinely stuck/broken → RED). WP-08 tightens this back to `running` when every unit must be healthy.
-HEALTH_grd='s=$(systemctl is-system-running 2>/dev/null); [ "$s" = running ] || [ "$s" = degraded ]'
-# SELF-DIAGNOSING probe (H4): same accept-set, but on failure prints its own evidence — the
-# manager state, the STUCK JOBS (the answer to a `starting` pin), the failed units, and a journal
-# tail — so a RED never reads blind.
-PROBE_grd='s=$(systemctl is-system-running 2>/dev/null); { [ "$s" = running ] || [ "$s" = degraded ]; } || { echo "=state=$s"; echo "=jobs="; systemctl list-jobs --no-legend; echo "=failed="; systemctl --failed --no-legend; echo "=journal="; journalctl -b -p warning -n 25 --no-pager; exit 1; }'
-# Poll budget 20×6 = 120s ≥ the gate's 90s health-start-period. Head b126468 proved the boot is
-# ~60s on the shared-vCPU host: the health poll (then 15×4=60s) expired at `starting` while the
-# PROBE — the same command, seconds later — PASSED. F2: a slow first boot is never falsely
-# unhealthy; the budget must exceed the real first boot, and 60s did not.
-HEALTH_TRIES_grd="20"
+# Cap add-backs on the gate's --cap-drop=ALL floor (all userns-scoped under the rootless engine):
+# systemd-tmpfiles + journal chowns need CHOWN/FOWNER/FSETID/DAC_OVERRIDE; the manager signals
+# with KILL; SETUID/SETGID/SETPCAP cover User= transitions (now real: per-user managers + runuser
+# provisioning). WP-08 adds: --security-opt label=disable (the ro-bound roster secret carries a
+# host SELinux label a confined candidate cannot read on the enforcing gate host — the exact
+# FENCE_xrdp rationale; production runs SecurityLabelDisable=true) + NET_BIND_SERVICE + SYS_CHROOT
+# (the A8 sshd door binds privileged :22 and privsep-chroots — identical to xrdp's WP-13 pair;
+# grd's own RDP/VNC ports are >1024 and need neither).
+FENCE_grd="--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --device /dev/fuse --security-opt label=disable --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL --cap-add NET_BIND_SERVICE --cap-add SYS_CHROOT"
+# GNOME software-compositing is materially heavier than XFCE (V36): N provisioned users = N
+# llvmpipe gnome-shell compositors + N grd daemons + N pipewire/wireplumber pairs.
+MEMORY_grd="6g"
+PIDS_grd="4096"
+# WP-08 TIGHTENS the health bar (the promise the skeleton made): kd-health = systemd fully
+# `running` + zero failed units + provision-complete + EVERY provisioned user's manager active
+# AND both grd doors answering real TCP on the uid-derived fixed ports + the A8 sshd door.
+HEALTH_grd='kd-health'
+# SELF-DIAGNOSING probe (H4): kd-health + the D6 census (V19 positive: kadm/gw1/gw2 exact, 5
+# exclusions absent) + per-user RDP listeners (kadm:3389 gw1:3390 gw2:3391) + the REAL VNC
+# credential round-trip via kd-vnc-check (V17 settled end-to-end: the grdctl-stdin credential
+# from pass-1 kd-cred authenticates a live RFB VncAuth login; A13 first-8 accept + cross-user/
+# garbage reject, rc-exact). On failure prints its own evidence — never a blind RED.
+PROBE_grd='kd-health && test $(id -u kadm) = 2000 && test $(id -u gw1) = 2001 && test $(id -u gw2) = 2002 && ! id -u gw3 2>/dev/null && ! id -u gw4 2>/dev/null && ! id -u gw5 2>/dev/null && timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/3389" && timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/3390" && timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/3391" && /usr/libexec/kd/kd-vnc-check 5901 gw1-bbbb-1111 gw2-cccc-2222 && /usr/libexec/kd/kd-vnc-check 5900 adm-aaaa-0000 gw1-bbbb-1111 || { echo "=state=" ; systemctl is-system-running ; echo "=failed=" ; systemctl --failed --no-legend ; echo "=run-kd=" ; ls -la /run/kd 2>&1 ; echo "=users=" ; getent passwd | grep -E "kadm|gw[12]" 2>&1 ; echo "=user-managers=" ; systemctl list-units "user@*" --no-legend 2>&1 ; echo "=ports=" ; for p in 3389 3390 3391 5900 5901 5902 22 ; do timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$p" 2>/dev/null && echo "open $p" ; done ; echo "=journal=" ; journalctl -b -p warning -n 30 --no-pager ; exit 1 ; }'
+# Poll budget 40×6 = 240s. The bare skeleton needed ~60s on the shared-vCPU host; the full GNOME
+# stack (3 users × gnome-shell-on-llvmpipe + grd + pipewire, provisioning first) is materially
+# heavier (V36). F2: the budget must exceed the real first boot — re-measure at the gate and trim.
+HEALTH_TRIES_grd="40"
 HEALTH_SLEEP_grd="6"
 
 # ---- LINEAGE 3: web (the ONE public door; DESIGN §3, WP-10) ---------------------------------

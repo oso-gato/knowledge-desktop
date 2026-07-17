@@ -1,0 +1,6 @@
+# kd-gnome-terminal.dconf (WP-08/WP-15 L2, V24) — Ptyxis as the GNOME default terminal, via the
+# dconf SYSTEM db (→ /etc/dconf/db/local.d/00-kd-terminal; compiled by `dconf update` at build).
+# The GNOME mechanism — the L1 XFCE exo-helpers file does not apply on this lineage.
+[org/gnome/desktop/default-applications/terminal]
+exec='ptyxis'
+exec-arg='--'
