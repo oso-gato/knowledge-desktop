@@ -83,19 +83,28 @@ COPY lineage-grd/kd-provision.service          /usr/lib/systemd/system/kd-provis
 # seatless lineage has no system graphical session — the per-user headless sessions ride the
 # lingering user managers). Unmasked, gdm would fail on the missing seat and flunk kd-health's
 # zero-failed-units bar.
-# systemd-oomd is the ONE preset-enabled unit that actually FAILS in this cap profile (research
-# Q4, systemd#34565): it runs User=systemd-oom with namespace sandboxing (ProtectSystem=strict/
-# PrivateDevices/ProtectHostname/…) which hard-fails "Failed to keep CAP_SYS_ADMIN" in a container
-# whose bounding set lacks it — and oomd is useless under a shared kernel (the host owns memory
-# pressure). Mask it (unit+socket) so it never trips kd-health's zero-failed-units bar; user@.service
-# only After=-orders on it, so masking is safe. Every OTHER F44 preset unit auto-skips on its own
-# Condition* (udevd/modules-load/journald-audit/mdmonitor/firstboot — verified) or isn't installed.
-# The dangling multi-user.target.wants/systemd-homed symlink (homed not installed) is harmless but
-# removed for a clean audit.
+# Mask the container-hostile daemons that FAIL this cap profile and are NOT needed for a headless
+# remote desktop — so none trips kd-health's zero-failed-units bar (this is NOT cargo-cult: each of
+# these ACTIVELY tries to start and fails; the units that auto-skip on Condition* are left alone).
+# TWO classes:
+#  (1) BASE: systemd-oomd (unit+socket) — User=systemd-oom + namespace sandboxing hard-fails "Failed
+#      to keep CAP_SYS_ADMIN" (systemd#34565); useless under a shared kernel (host owns OOM). #23's
+#      first host boot confirmed it. user@.service only After=-orders it, so masking is safe.
+#  (2) SESSION (surfaced once systemd-pam let the per-user managers + gnome-shell actually boot —
+#      #23 grd @1431a6c): the gnome-shell/mutter/xdg-desktop-portal stack pokes a handful of system
+#      daemons that can't run here. geoclue (User=geoclue, location) + rtkit-daemon (RealtimeKit RT
+#      scheduling) FAILED in the gate journal; colord (User=colord, display colour) +
+#      power-profiles-daemon are the same poked-and-fail class. ALL FOUR are irrelevant to headless
+#      RDP/VNC — the desktop degrades cleanly without them (pipewire runs without RT priority; no
+#      location/colour/power panel matters headless). Masking a dbus-activated unit turns its
+#      activation into a handled NameHasNoOwner for the caller, and it never enters `--failed`.
+# Every OTHER F44 preset unit auto-skips on its own Condition* (verified) or isn't installed. The
+# dangling multi-user.target.wants/systemd-homed symlink (homed not installed) is removed for a clean audit.
 RUN systemctl enable kd-provision.service sshd.service \
     && systemctl --global enable gnome-shell-headless.service gnome-remote-desktop-headless.service \
     && systemctl set-default multi-user.target \
     && systemctl mask gdm.service systemd-oomd.service systemd-oomd.socket \
+        geoclue.service rtkit-daemon.service colord.service power-profiles-daemon.service \
     && rm -f /etc/systemd/system/multi-user.target.wants/systemd-homed.service
 
 # ---- A8 terminal door config (lineage-agnostic; reuses the L1-proven files verbatim) ---------
@@ -163,6 +172,7 @@ RUN set -e \
     && grep -rq 'pam_systemd' /etc/pam.d/system-auth || { echo "L2: pam_systemd not wired into system-auth"; exit 1; } \
     && test -f /etc/systemd/system/user@.service.d/50-xdg-runtime-dir.conf || { echo "L2: XDG_RUNTIME_DIR drop-in missing"; exit 1; } \
     && [ "$(readlink /etc/systemd/system/systemd-oomd.service)" = "/dev/null" ] || { echo "L2: systemd-oomd not masked — it fails CAP_SYS_ADMIN and trips kd-health"; exit 1; } \
+    && for m in geoclue rtkit-daemon colord power-profiles-daemon; do [ "$(readlink /etc/systemd/system/$m.service)" = "/dev/null" ] || { echo "L2: $m.service not masked — a hostile session daemon that trips kd-health's zero-failed bar"; exit 1; }; done \
     && test -f /usr/lib/systemd/user/gnome-remote-desktop-headless.service || { echo "L2 MISSING: shipped grd headless user unit (override target)"; exit 1; } \
     && test -f /etc/dconf/db/local || { echo "L2: dconf db not compiled (ptyxis default, V24)"; exit 1; } \
     && test -L /etc/systemd/system/multi-user.target.wants/kd-provision.service || { echo "L2: kd-provision.service not enabled"; exit 1; } \
