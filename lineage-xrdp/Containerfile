@@ -38,10 +38,15 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         python3 shadow-utils tigervnc-server-common tigervnc-x11-server \
         acl procps-ng glibc-langpack-en \
         openssh-server mosh tmux \
+        podman crun passt fuse-overlayfs \
         git-core \
     && dnf clean all
 # WP-13 (A8 terminal door): openssh-server (key-only, config below) + mosh (roaming UDP) + tmux
 # (the one persistent per-user session).
+# WP-16 (B3 nested rootless podman): podman + crun (OCI runtime) + passt/pasta (rootless net) +
+# fuse-overlayfs (the PINNED mount program — determinism across host classes + the gate, [ADJ-12]).
+# shadow-utils (already above) provides newuidmap/newgidmap for the per-user subuid bands
+# kd-provision writes. Per-user storage.conf + graphroot on the /home volume are provisioned at boot.
 # WP-17 (E4 vault): git-core — the per-user ~/Vault git clone + the guarded 5-min sync cycle
 # (kd-vault-sync/init/driver) run git. Named EXPLICITLY here (class-(a), weak deps off): the WP-15
 # toolset layer installs no git, so it must not be assumed as an incidental dependency (N2).
@@ -137,6 +142,7 @@ COPY shared/kd-vault-sync           /usr/libexec/kd/kd-vault-sync
 COPY shared/kd-vault-init           /usr/libexec/kd/kd-vault-init
 COPY shared/kd-vault-driver         /usr/libexec/kd/kd-vault-driver
 COPY shared/kd-vault-gitignore      /usr/libexec/kd/kd-vault-gitignore
+COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
 COPY lineage-xrdp/kd-cred           /usr/libexec/kd/kd-cred
 COPY lineage-xrdp/kd-session-enable /usr/libexec/kd/kd-session-enable
 COPY lineage-xrdp/startwm-kd        /usr/libexec/kd/startwm-kd
@@ -144,7 +150,7 @@ COPY lineage-xrdp/doors-agent       /usr/libexec/kd/doors-agent
 COPY gate/probe/kd-vnc-login        /usr/libexec/kd/kd-vnc-login
 COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
 RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
-        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
+        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
         /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check \
         /usr/libexec/kd/kd-vault-sync /usr/libexec/kd/kd-vault-init /usr/libexec/kd/kd-vault-driver \
