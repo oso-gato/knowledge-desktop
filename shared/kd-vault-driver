@@ -23,9 +23,12 @@ sweep(){
         [ "$uid" -ge "$UID_BASE" ] 2>/dev/null || continue
         [ "$uid" -lt 60000 ] || continue                       # skip nobody/systemd ranges
         [ -d "$home/Vault/.git" ] || continue                  # no vault for this user — skip quietly
-        runuser -u "$name" -- env HOME="$home" "$SYNC" >/dev/null 2>&1 \
-            && swept=$((swept+1)) \
-            || LOG "sync returned nonzero for $name (guard tripped or transient) — continuing (fail-safe)"
+        # capture the sync's own output into the driver log (guard-trip reasons + notifications must
+        # reach the container log, not just the durable stop-flag file) while preserving its rc.
+        local out; out="$(runuser -u "$name" -- env HOME="$home" "$SYNC" 2>&1)"; local rc=$?
+        [ -n "$out" ] && printf '%s\n' "$out" | while IFS= read -r l; do echo "kd-vault-driver: [$name] $l"; done
+        if [ "$rc" -eq 0 ]; then swept=$((swept+1))
+        else LOG "sync rc=$rc for $name (guard tripped or transient) — continuing (fail-safe)"; fi
     done < <(getent passwd)
     LOG "sweep complete: $swept vault(s) synced"
 }

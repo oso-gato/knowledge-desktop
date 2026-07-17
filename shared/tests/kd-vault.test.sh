@@ -182,6 +182,49 @@ chk "driver SKIPPED carol (no ~/Vault)" "! grep -qx carol '$WORK/swept.log'"
 chk "driver SKIPPED sysacct (uid<base)" "! grep -qx sysacct '$WORK/swept.log'"
 chk "driver SKIPPED root (uid<base)" "! grep -qx root '$WORK/swept.log'"
 
+# ============================================================================================
+echo "== F1 regression: local BULK IMPORT must NOT trip the inbound mass-delete guard =="
+# The fix's whole point: `git diff HEAD..remote` (two-dot) counts every locally-committed,
+# not-yet-pushed file as an inbound "deletion", so a first-import of a big corpus (the product's
+# first-use scenario) would falsely trip the guard and PERMANENTLY wedge sync. Three-dot
+# (merge-base→remote) counts only real remote-side deletions. This exercises exactly that direction
+# (remote UNCHANGED, many local additions > bound) — it FAILS against the old two-dot code.
+setup f1 3; FLOOR=5
+for i in $(seq 1 20); do echo "imported note $i" > "$V/imp$i.md"; done      # 20 new >> bound 5
+before_remote="$(git -C "$R" rev-parse main)"
+run_sync; rc=$?
+chk "F1: bulk import (20 adds, 0 remote deletes) does NOT trip inbound guard (rc 0)" "[ $rc -eq 0 ]"
+chk "F1: no stop-flag set on a legitimate bulk import" "[ ! -e '$SF' ]"
+chk "F1: the imported corpus was pushed to the remote" "git -C '$R' cat-file -e main:imp20.md 2>/dev/null"
+chk "F1: remote advanced (import actually landed)" "[ '$before_remote' != '$(git -C "$R" rev-parse main)' ]"
+unset FLOOR
+
+# ============================================================================================
+echo "== F2: GitHub protection reads the EFFECTIVE-RULES endpoint (mock gh) =="
+# F2 fix: /repos/{o}/{r}/rules/branches/{branch} returns active rule .type values (the /rulesets LIST
+# endpoint returns summaries with none). Anchor the test to the real code, then exercise the exact
+# endpoint+jq+grep classification on realistic responses via a mock gh.
+grep -q 'rules/branches/\$branch' "$INIT" || no "F2: kd-vault-init still hits the wrong endpoint (expected rules/branches)"
+grep -q 'repos/\$slug/rulesets' "$INIT" && no "F2: kd-vault-init still references the summary /rulesets endpoint"
+# jq-free mock: gh applies `--jq` internally in production, and the F2 bug was the ENDPOINT (not the
+# jq — `[.[].type]` is correct for the /rules/branches array shape), so the mock emits the already-
+# jq'd @csv line the real gh would return, letting this run without external jq (absent in the box).
+mkgh(){ mkdir -p "$WORK/ghbin"; cat > "$WORK/ghbin/gh" <<GH
+#!/usr/bin/env bash
+ep=""
+while [ \$# -gt 0 ]; do case "\$1" in --jq) shift 2;; api) shift;; *) ep="\$1"; shift;; esac; done
+case "\$ep" in */rules/branches/*) printf '%s\n' '$1' ;; *) exit 1;; esac
+GH
+chmod +x "$WORK/ghbin/gh"; }
+classify(){ local rs; rs="$(PATH="$WORK/ghbin:$PATH" gh api "repos/o/r/rules/branches/main" --jq '[.[].type] | @csv' 2>/dev/null)" || return 2
+  printf '%s' "$rs" | grep -q non_fast_forward && printf '%s' "$rs" | grep -q deletion && return 0 || return 1; }
+mkgh '"non_fast_forward","deletion","pull_request"'
+if classify; then ok "F2: nff+deletion rules => protected"; else no "F2: protected repo misclassified"; fi
+mkgh '"pull_request"'
+if classify; then no "F2: unprotected repo misclassified as protected"; else ok "F2: no nff/deletion => unprotected"; fi
+mkgh '"non_fast_forward"'
+if classify; then no "F2: nff-only misclassified as protected"; else ok "F2: nff-only (missing deletion) => unprotected (BOTH required)"; fi
+
 echo
 echo "== RESULT: $pass passed, $fail failed =="
 [ "$fail" -eq 0 ] && echo "KD-VAULT: GREEN" || { echo "KD-VAULT: RED"; exit 1; }

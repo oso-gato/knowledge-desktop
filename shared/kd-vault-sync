@@ -80,7 +80,12 @@ remote_ref="origin/$branch"
 git rev-parse --verify -q "$remote_ref" >/dev/null 2>&1 || { LOG "no $remote_ref yet — pushing initial"; remote_ref=""; }
 
 if [ -n "$remote_ref" ]; then
-    inbound_del="$(git diff --name-only --diff-filter=D HEAD.."$remote_ref" 2>/dev/null | wc -l)"
+    # THREE-dot (merge-base → remote), NOT two-dot: `git diff A..B` is a DIRECT tree diff, so every
+    # file present locally but not yet on the remote — i.e. a locally-committed, not-yet-pushed note,
+    # the normal state after a bulk first-import — would count as a remote "deletion" and falsely
+    # trip this guard, wedging sync permanently. Three-dot (`git diff $(merge-base HEAD remote) remote`)
+    # counts ONLY files the remote actually deleted since the common ancestor.
+    inbound_del="$(git diff --name-only --diff-filter=D "HEAD...$remote_ref" 2>/dev/null | wc -l)"
     if [ "$inbound_del" -gt "$bound" ]; then
         set_stop "inbound mass-delete guard: $inbound_del deletions > bound $bound"
         notify "Vault sync paused: the server has $inbound_del deletions (limit $bound). Your local copy is untouched. Review, then clear the stop-flag."

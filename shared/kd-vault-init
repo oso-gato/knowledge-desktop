@@ -66,12 +66,17 @@ assert_protected(){
             nff="$(git -C "$bare" config --bool receive.denyNonFastForwards 2>/dev/null)"
             del="$(git -C "$bare" config --bool receive.denyDeletes 2>/dev/null)"
             [ "$nff" = true ] && [ "$del" = true ] && return 0 || return 1 ;;
-        # GitHub remote: a repo ruleset with non_fast_forward + deletion is the production control.
+        # GitHub remote: query the branch's EFFECTIVE active rules. This endpoint
+        # (/repos/{o}/{r}/rules/branches/{branch}) returns only rules from ACTIVE rulesets that
+        # TARGET this branch — each element carries the rule `.type` — so enforcement==active and
+        # branch-targeting are already applied by the API. (The /rulesets LIST endpoint used before
+        # returns ruleset SUMMARIES with NO rule types, so a correctly-protected repo read as
+        # unprotected and vault-ready was withheld forever on the production path — the F2 bug.)
+        # Protected iff BOTH non_fast_forward (no history rewrite) AND deletion (no branch delete) apply.
         https://github.com/*|git@github.com:*|ssh://git@github.com/*)
             command -v gh >/dev/null 2>&1 || return 2
             local slug; slug="$(printf '%s' "$url" | sed -E 's#(https://github.com/|git@github.com:|ssh://git@github.com/)##; s#\.git$##')"
-            local rs; rs="$(gh api "repos/$slug/rulesets" --jq '[.[].type] | @csv' 2>/dev/null)" || return 2
-            # ruleset endpoint reachable+authed; presence of both rule types = protected
+            local rs; rs="$(gh api "repos/$slug/rules/branches/$branch" --jq '[.[].type] | @csv' 2>/dev/null)" || return 2
             printf '%s' "$rs" | grep -q non_fast_forward && printf '%s' "$rs" | grep -q deletion && return 0 || return 1 ;;
         *) return 2 ;;
     esac
