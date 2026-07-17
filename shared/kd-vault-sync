@@ -54,6 +54,14 @@ branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo main)"
 tracked="$(git ls-files | wc -l)"
 bound="$(delete_bound "$tracked")"
 
+# Git identity for EVERY commit-creating path — the commit AND the divergent (non-ff) merge, which
+# writes a merge commit and needs identity exactly like `git commit`. A provisioned kd user has NO
+# identity anywhere (kd-vault-init writes none; the driver's runuser env passes none), so a bare
+# `git merge` would die "unable to auto-detect email address" on a perfectly CLEAN divergent merge
+# and be misdiagnosed by the conflict branch as a conflict => a false durable stop-flag.
+GIT_ID=(-c user.name="${KD_VAULT_GIT_NAME:-knowledge-desktop}"
+        -c user.email="${KD_VAULT_GIT_EMAIL:-vault@knowledge-desktop.local}")
+
 # --- guarded COMMIT ------------------------------------------------------------------------------
 git add -A 2>/dev/null
 staged_del="$(git diff --cached --name-only --diff-filter=D 2>/dev/null | wc -l)"
@@ -65,9 +73,7 @@ if [ "$staged_del" -gt "$bound" ]; then
     exit 3
 fi
 if ! git diff --cached --quiet 2>/dev/null; then
-    git -c user.name="${KD_VAULT_GIT_NAME:-knowledge-desktop}" \
-        -c user.email="${KD_VAULT_GIT_EMAIL:-vault@knowledge-desktop.local}" \
-        commit -q -m "vault-sync $(date -u +%FT%TZ) ${HOSTNAME:-kd}" 2>/dev/null \
+    git "${GIT_ID[@]}" commit -q -m "vault-sync $(date -u +%FT%TZ) ${HOSTNAME:-kd}" 2>/dev/null \
         && LOG "committed local changes (branch $branch)"
 fi
 
@@ -94,7 +100,7 @@ if [ -n "$remote_ref" ]; then
     fi
     # fast-forward first; only a genuine divergence needs a real merge
     if ! git merge -q --ff-only "$remote_ref" 2>/dev/null; then
-        if ! git merge -q --no-edit "$remote_ref" 2>/dev/null; then
+        if ! git "${GIT_ID[@]}" merge -q --no-edit "$remote_ref" 2>/dev/null; then
             git merge --abort 2>/dev/null || true        # byte-identical restore of pre-merge tree
             set_stop "merge conflict on $branch vs $remote_ref"
             notify "Vault sync paused: a merge conflict needs your attention. Your local copy was restored unchanged. Resolve on one device, then clear the stop-flag."

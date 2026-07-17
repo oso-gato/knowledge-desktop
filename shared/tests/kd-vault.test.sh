@@ -132,6 +132,25 @@ chk "divergent-clean merge rc 0" "[ $rc -eq 0 ]"
 chk "divergent-clean => both edits present locally" "[ '$n1' = 'remote' ] && [ -f '$V/note2.md' ]"
 chk "divergent-clean => pushed (local tip == remote tip)" "[ '$ltip' = '$rtip' ]"
 
+# T12b divergent CLEAN merge with NO ambient git identity — the PRODUCTION state: a provisioned kd
+# user has no user.name/email anywhere (init writes none, the driver's runuser env passes none), so
+# the sync script itself must supply identity on EVERY commit-creating path — the divergent merge
+# writes a merge commit exactly like `git commit`. The suite's global GIT_AUTHOR_*/GIT_COMMITTER_*
+# exports masked this: pre-fix, the merge died "unable to auto-detect email address" and the error
+# branch misdiagnosed the CLEAN merge as a conflict => false durable stop-flag. FAILS pre-fix.
+setup s12b 3
+peer="$WORK/s12bpeer"; newclone "$R" "$peer"
+( cd "$peer" && echo "remote" > note1.md && git_q add -A && git_q commit -m r && git_q push origin main )
+echo "localonly" > "$V/note2.md"
+KD_VAULT_DIR="$V" KD_VAULT_READY="$RD" KD_VAULT_STOPFLAG="$SF" \
+    env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \
+    "$SYNC" >/dev/null 2>&1; rc=$?
+n1="$(cat "$V/note1.md")"; ltip="$(git -C "$V" rev-parse HEAD)"; rtip="$(git -C "$R" rev-parse main)"
+chk "divergent-clean, NO ambient identity => rc 0 (script supplies its own)" "[ $rc -eq 0 ]"
+chk "divergent-clean, NO ambient identity => NO stop-flag (not misread as conflict)" "[ ! -e '$SF' ]"
+chk "divergent-clean, NO ambient identity => both edits present locally" "[ '$n1' = 'remote' ] && [ -f '$V/note2.md' ]"
+chk "divergent-clean, NO ambient identity => pushed (local tip == remote tip)" "[ '$ltip' = '$rtip' ]"
+
 # T13 unreachable remote at fetch => tree intact, rc 0 (fail-safe)
 setup s13 3; echo z > "$V/z.md"; rm -rf "$R"; run_sync; rc=$?
 chk "fetch-unreachable => rc 0 (non-fatal)" "[ $rc -eq 0 ]"
