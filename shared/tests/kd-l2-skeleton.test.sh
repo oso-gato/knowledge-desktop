@@ -45,10 +45,9 @@ xck "nautilus present (B1)"          usr/bin/nautilus
 lck "kd-provision.service enabled"   etc/systemd/system/multi-user.target.wants/kd-provision.service
 lck "sshd.service enabled (A8)"      etc/systemd/system/multi-user.target.wants/sshd.service
 lck "gnome-shell-headless --global"  etc/systemd/user/default.target.wants/gnome-shell-headless.service
-# grd is DELIBERATELY NOT --global enabled (WP-08 door fix): it must never auto-start UNCONFIGURED
-# at the linger instant (empty store => doors dark, and a later `start` no-ops it). kd-session-enable
-# is the SOLE, config-first starter. Assert the auto-start symlink is ABSENT.
-if tar -tf "$TARF" etc/systemd/user/default.target.wants/gnome-remote-desktop-headless.service >/dev/null 2>&1; then echo "FAIL grd must NOT be --global enabled (config-first design)"; fails=$((fails+1)); else echo "ok   grd NOT --global enabled (config-first; kd-session-enable starts it)"; fi
+# grd IS --global enabled: `grdctl --headless enable` configures a RUNNING daemon, so grd must
+# auto-start at linger; the unconfigured-start is resolved by kd-session-enable's `restart` (re-read).
+lck "grd-headless --global (grdctl enable needs the running daemon)" etc/systemd/user/default.target.wants/gnome-remote-desktop-headless.service
 
 # the unit graph content landed
 ck "compositor unit: headless + pinned socket" etc/systemd/user/gnome-shell-headless.service '--headless --wayland-display wayland-grd'
