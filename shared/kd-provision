@@ -410,6 +410,21 @@ def apply_user(u, uid, created, vault_repo=None):
     else:
         log(f"hook absent (lands WP-10): kd-web-sync — web identity for {name} not synced")
 
+    # agent env / git identity (WP-13 agents, G1/G2): install the user's git identity + GitHub
+    # credential so their resident agent AND the E4 vault sync operate GitHub AS them. The TOKEN
+    # rides STDIN only (E1 — never argv/log/other-uid env); the identity fields (login/name/email/
+    # provider) are non-secret argv. Run AS the user (its files are user-owned 0600). Skipped when
+    # the user has no `vcs` block. check=False so a credential hiccup never rolls back the account.
+    # Runs BEFORE the vault clone below: a production private-GitHub vault clone uses this credential.
+    vcs = u.get("vcs")
+    aenv = hook("kd-agent-env")
+    if vcs and aenv:
+        run(["runuser", "-u", name, "--", "env", f"HOME={home}", aenv,
+             vcs["login"], vcs["git_name"], vcs["git_email"], vcs["provider"]],
+            stdin_data=vcs["token"] + "\n", check=False)
+    elif vcs:
+        log(f"hook absent (lands WP-13-agents): kd-agent-env — git identity for {name} not installed")
+
     # vault (E4, WP-17): per-user ~/Vault clone + broadened .gitignore + fail-safe remote-protection
     # gate. Runs AS the user (clone is user-owned, uses the user's own git credential — E1). Skipped
     # when box.vault_repo is absent (E2 degrade). kd-vault-init is itself fail-safe (always exits 0,

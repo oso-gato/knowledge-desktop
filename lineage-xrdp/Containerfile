@@ -39,17 +39,18 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         acl procps-ng glibc-langpack-en \
         openssh-server mosh tmux \
         podman crun passt fuse-overlayfs \
-        git-core \
+        git-core gh \
     && dnf clean all
 # WP-13 (A8 terminal door): openssh-server (key-only, config below) + mosh (roaming UDP) + tmux
 # (the one persistent per-user session).
+# WP-13 (agents, G1/G2) + WP-17 (E4 vault): git-core + gh (GitHub CLI, class-(a) Fedora) — git-core
+# runs the per-user git identity/credential (kd-agent-env) AND the ~/Vault clone + guarded 5-min sync
+# (kd-vault-sync/init/driver); gh is the resident agent's GitHub CLI. Named EXPLICITLY here (weak
+# deps off): the WP-15 toolset installs no git/gh, so neither may be assumed as an incidental dep (N2).
 # WP-16 (B3 nested rootless podman): podman + crun (OCI runtime) + passt/pasta (rootless net) +
 # fuse-overlayfs (the PINNED mount program — determinism across host classes + the gate, [ADJ-12]).
 # shadow-utils (already above) provides newuidmap/newgidmap for the per-user subuid bands
 # kd-provision writes. Per-user storage.conf + graphroot on the /home volume are provisioned at boot.
-# WP-17 (E4 vault): git-core — the per-user ~/Vault git clone + the guarded 5-min sync cycle
-# (kd-vault-sync/init/driver) run git. Named EXPLICITLY here (class-(a), weak deps off): the WP-15
-# toolset layer installs no git, so it must not be assumed as an incidental dependency (N2).
 
 # A8 door config: key-only least-privilege sshd + the tmux auto-attach profile (ssh AND mosh).
 COPY lineage-xrdp/sshd-kd.conf /etc/ssh/sshd_config.d/10-kd.conf
@@ -142,6 +143,7 @@ COPY shared/kd-vault-sync           /usr/libexec/kd/kd-vault-sync
 COPY shared/kd-vault-init           /usr/libexec/kd/kd-vault-init
 COPY shared/kd-vault-driver         /usr/libexec/kd/kd-vault-driver
 COPY shared/kd-vault-gitignore      /usr/libexec/kd/kd-vault-gitignore
+COPY shared/kd-agent-env            /usr/libexec/kd/kd-agent-env
 COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
 COPY lineage-xrdp/kd-cred           /usr/libexec/kd/kd-cred
 COPY lineage-xrdp/kd-session-enable /usr/libexec/kd/kd-session-enable
@@ -150,7 +152,7 @@ COPY lineage-xrdp/doors-agent       /usr/libexec/kd/doors-agent
 COPY gate/probe/kd-vnc-login        /usr/libexec/kd/kd-vnc-login
 COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
 RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
-        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
+        /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
         /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check \
         /usr/libexec/kd/kd-vault-sync /usr/libexec/kd/kd-vault-init /usr/libexec/kd/kd-vault-driver \
