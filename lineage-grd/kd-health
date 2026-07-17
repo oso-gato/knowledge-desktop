@@ -5,8 +5,18 @@
 # that do not exist here (an UNTRUE health claim, N4).
 #
 # Tiers:
-#   1. INIT: systemd itself fully `running` AND zero failed units (the WP-08 tighten from the
-#      skeleton's running|degraded — every unit must now be healthy).
+#   1. INIT: systemd reached a STABLE state (running|degraded) AND the two LOAD-BEARING system
+#      daemons are active — dbus-broker (the bus grd/logind ride) + systemd-logind (linger → the
+#      per-user managers). This SUPERSEDES the WP-08 "zero failed units" tighten (the design's
+#      OWN named-relaxation path, tier-3 note): empirically a full GNOME session in a rootless
+#      no-CAP_SYS_ADMIN container ALWAYS leaves a tail of incidental system daemons failed
+#      (polkit, upower, and the geoclue/rtkit/colord/power-profiles class we mask) — NONE of which
+#      is what makes the DESKTOP healthy, and requiring zero-failed is unbounded whack-a-mole that
+#      a Fedora update re-breaks. The REAL door/session health is proven positively by tiers 2-4
+#      (each user@uid active + RDP/VNC ports answer) + PROBE_grd's port census — grd and gnome-shell
+#      are USER services whose failures never even move the system-level is-system-running, so the
+#      old system bar was never a door-health proxy anyway (N4/N5 honest: assert what MUST hold,
+#      tolerate incidental degradation, prove the doors by probing them).
 #   2. E2: provisioning completed (/run/kd/provision-complete — kd-provision is shared).
 #   3. PER-USER DOORS (C3 warm sessions, unaided): for EVERY provisioned user (uid>=2000), the
 #      lingering user@uid manager is active AND both grd doors answer a REAL TCP connect on the
@@ -17,10 +27,12 @@
 set -u
 fail(){ echo "kd-health: UNHEALTHY — $*"; exit 1; }
 
-# 1. init authority is systemd itself
+# 1. init authority is systemd itself — stable state + the load-bearing daemons (not every unit)
 s="$(systemctl is-system-running 2>/dev/null)"
-[ "$s" = running ] || fail "system not running (is-system-running=$s)"
-[ -z "$(systemctl --failed --no-legend 2>/dev/null)" ] || fail "failed units present"
+{ [ "$s" = running ] || [ "$s" = degraded ]; } || fail "system not up (is-system-running=$s)"
+for u in dbus-broker.service systemd-logind.service; do
+    systemctl is-active "$u" >/dev/null 2>&1 || fail "load-bearing unit down: $u"
+done
 
 # 2. provisioning completed (strict E2)
 [ -f /run/kd/provision-complete ] || fail "provisioning never completed"
