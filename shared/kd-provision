@@ -67,6 +67,12 @@ RUN = os.environ.get("KD_RUN", "/run/kd")
 LIBEXEC = os.environ.get("KD_LIBEXEC", "/usr/libexec/kd")
 UID_BASE = 2000
 UID_MAX = 60000  # stay clear of nested-podman subuid bands (DESIGN §5)
+# B3 (WP-16) nested-podman per-user subid bands (DESIGN §5 [ADJ-12]): band base 200000, one full
+# uid16 range (65536) per user, keyed by (uid - UID_BASE) so it is STABLE + non-overlapping +
+# append-only (a user keeps their band; matches the append-only uidmap). N=5 users span
+# 200000..527680, well inside the box account's required >=2,097,152 grant (setup.sh asserts it).
+NESTED_SUBID_BASE = 200000
+NESTED_BAND = 65536
 
 PASS_RE = re.compile(r"[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{4}")  # A13: xxx-xxxx-xxxx
 USER_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
@@ -308,6 +314,47 @@ def account_exists(name):
         return None
 
 
+def setup_nested_podman(name, uid, home, pw_ent):
+    """B3 (WP-16): per-user nested rootless podman. Give the user (1) a subuid+subgid band in
+    /etc/sub{u,g}id (200000 + (uid-UID_BASE)*65536, size 65536 — stable, non-overlapping,
+    allocated from the box account's >=2M grant) and (2) a ~/.config/containers/storage.conf that
+    PINS fuse-overlayfs as the mount program (determinism across host classes + the gate, [ADJ-12])
+    with a graphroot on the /home volume (E3-persistent across recreation). Idempotent: a re-apply
+    replaces THIS user's sub{u,g}id line only, never touching others'."""
+    band = NESTED_SUBID_BASE + (uid - UID_BASE) * NESTED_BAND
+    for path in ("/etc/subuid", "/etc/subgid"):
+        try:
+            kept = [l for l in open(path, encoding="utf-8").read().splitlines()
+                    if l and not l.startswith(name + ":")]
+        except FileNotFoundError:
+            kept = []
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(kept + [f"{name}:{band}:{NESTED_BAND}"]) + "\n")
+        os.chmod(path, 0o644)
+    cfgdir = os.path.join(home, ".config", "containers")
+    graphroot = os.path.join(home, ".local", "share", "containers", "storage")
+    os.makedirs(cfgdir, mode=0o700, exist_ok=True)
+    os.makedirs(graphroot, mode=0o700, exist_ok=True)
+    conf = os.path.join(cfgdir, "storage.conf")
+    with open(conf, "w", encoding="utf-8") as f:
+        f.write('# kd-provision (WP-16, B3) — per-user nested rootless podman storage.\n'
+                '[storage]\n'
+                'driver = "overlay"\n'
+                f'graphroot = "{graphroot}"\n'
+                '[storage.options.overlay]\n'
+                'mount_program = "/usr/bin/fuse-overlayfs"\n')
+    os.chmod(conf, 0o644)
+    # own the user's config + storage tree (dirs useradd -m may or may not have pre-created)
+    for p in (os.path.join(home, ".config"), cfgdir, conf,
+              os.path.join(home, ".local"), os.path.join(home, ".local", "share"),
+              os.path.join(home, ".local", "share", "containers"), graphroot):
+        try:
+            os.chown(p, uid, pw_ent.pw_gid)
+        except OSError:
+            pass
+    log(f"nested podman (B3): {name} sub{{u,g}}id band {band}:{NESTED_BAND}; fuse-overlayfs graphroot")
+
+
 def apply_user(u, uid, created):
     """Pass-1 apply for one valid user. Secrets ride stdin only (E1)."""
     name = u["username"]
@@ -348,6 +395,9 @@ def apply_user(u, uid, created):
         os.chown(sshd, uid, pw_ent.pw_gid)
     elif os.path.exists(ak):
         os.unlink(ak)
+
+    # nested rootless podman (B3, WP-16): subuid/subgid band + fuse-overlayfs storage.conf
+    setup_nested_podman(name, uid, home, pw_ent)
 
     # web door sync (WP-10/WP-11 consumer; optional hook until it lands). The uid rides argv —
     # an identity, not a secret (E1 holds; usernames already appear in logs, E6 R19-class).
