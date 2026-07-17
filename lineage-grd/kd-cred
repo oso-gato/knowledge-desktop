@@ -41,6 +41,12 @@ install)
     [ -n "$phrase" ] || { echo "kd-cred: empty phrase on stdin" >&2; exit 1; }
     printf '%s:%s\n' "$user" "$phrase" | chpasswd
     if command -v grdctl >/dev/null; then
+        # ensure the GKeyFile store dir exists BEFORE grdctl set-credentials — grd's headless
+        # backend writes ~/.local/share/gnome-remote-desktop/credentials.ini, and that dir is
+        # otherwise first created in kd-session-enable (pass 2, LATER). A grdctl g_file_set_contents
+        # ENOENT here would throw up into kd-provision's apply_user => admin die(4) => exit-force
+        # (a candidate for the observed 8s exit=4). Create it as the user so ownership is correct.
+        grd_as_user 'mkdir -p "$HOME/.local/share/gnome-remote-desktop"'
         # V17: credentials via piped stdin — never argv (E1)
         printf '%s\n' "$phrase"        | grd_as_user "grdctl --headless rdp set-credentials '$user'"
         printf '%s\n' "${phrase:0:8}"  | grd_as_user "grdctl --headless vnc set-password"

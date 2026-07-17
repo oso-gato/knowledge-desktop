@@ -13,6 +13,10 @@
 Description=GNOME Shell (headless Wayland compositor for the RDP/VNC doors)
 Wants=graphical-session.target
 Before=graphical-session.target
+# the first mutter-on-llvmpipe boot is slow + can blip (session bus / pipewire race); without this
+# the default 5-starts/10s limit trips and the compositor goes PERMANENTLY failed inside the health
+# window, burying the real first error. Keep retrying while the cold boot settles.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

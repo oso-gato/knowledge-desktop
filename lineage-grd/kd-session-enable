@@ -34,7 +34,7 @@ run_user 'systemctl --user enable --now pipewire.socket pipewire-pulse.socket wi
 
 # per-user RDP TLS cert, once (grd RDP will NOT bind without cert+key — enforce the ordering:
 # tls + creds + port THEN enable, or the listener never appears and the gate sees no door)
-run_user 'd="$HOME/.local/share/gnome-remote-desktop"; mkdir -p "$d"; [ -f "$d/tls.crt" ] || openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -out "$d/tls.crt" -keyout "$d/tls.key" 2>/dev/null; chmod 600 "$d/tls.key"'
+run_user 'd="$HOME/.local/share/gnome-remote-desktop"; mkdir -p "$d"; [ -f "$d/tls.crt" ] || openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -out "$d/tls.crt" -keyout "$d/tls.key"; chmod 600 "$d/tls.key"; [ -s "$d/tls.crt" ] && [ -s "$d/tls.key" ] || { echo "kd-session-enable: TLS cert/key generation failed (RDP will not bind)" >&2; exit 1; }'
 
 # grd headless RDP: tls → fixed port (negotiate-port=false) → enable LAST
 run_user 'grdctl --headless rdp set-tls-cert "$HOME/.local/share/gnome-remote-desktop/tls.crt"'
@@ -49,10 +49,18 @@ run_user "grdctl --headless vnc set-port ${vnc_port}"
 run_user "grdctl --headless vnc disable-port-negotiation"
 run_user "grdctl --headless vnc enable"
 
-# bring up the compositor + grd daemon under the user manager (add-wants belts the image's
-# --global enable; enable --now is idempotent for a running unit)
-run_user 'systemctl --user add-wants default.target gnome-remote-desktop-headless.service'
+# compositor FIRST → wait for mutter to export its RemoteDesktop D-Bus API → then (re)start grd so
+# it reads the store just configured. Three deliberate changes vs the old start-based sequence:
+#   - `restart` (not `start`): grd is no longer --global enabled (see Containerfile), so a plain
+#     start could race; restart cleanly (re)starts it CONFIG-FIRST, forcing a fresh store read
+#     regardless of whether grd live-reloads (settles the grdctl writer/reader-store question).
+#   - the gdbus wait closes the cold-llvmpipe race: mutter needs seconds to export
+#     org.gnome.Mutter.RemoteDesktop, and a grd that starts before it dies "name has no owner"/0x904.
+#   - the old `add-wants default.target …` is DROPPED: it persisted the unconfigured-auto-start race
+#     onto the production home volume; kd-provision re-runs on every boot, so the explicit restart
+#     already covers reboots (and grd's own Restart=on-failure self-heals a late compositor).
 run_user 'systemctl --user enable --now gnome-shell-headless.service'
-run_user 'systemctl --user start gnome-remote-desktop-headless.service'
+run_user 'for i in $(seq 1 60); do gdbus introspect --session --dest org.gnome.Mutter.RemoteDesktop --object-path /org/gnome/Mutter/RemoteDesktop >/dev/null 2>&1 && break; sleep 0.5; done'
+run_user 'systemctl --user restart gnome-remote-desktop-headless.service'
 
 echo "kd-session-enable: ${user} session up (rdp :${rdp_port}, vnc :${vnc_port})"

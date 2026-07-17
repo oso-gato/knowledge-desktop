@@ -66,8 +66,9 @@ RUN dnf -y --setopt=install_weak_deps=False install \
 # ---- systemd unit graph: per-user headless GNOME + grd, boot-enabled -------------------------
 # gnome-shell-headless.service: the per-user headless Wayland compositor (systemd --user unit).
 # grd-headless-override.conf: wires the SHIPPED gnome-remote-desktop-headless.service to the
-#   compositor + pipewire and gives it a default.target [Install] (the shipped unit only installs
-#   into gnome-session.target, which never exists on this gnome-session-less lineage).
+#   compositor + pipewire and adds Restart=on-failure self-heal. It has NO [Install] and grd is
+#   NOT --global enabled (below): grd must never auto-start UNCONFIGURED at linger (empty store =>
+#   doors dark, and a later `start` no-ops it) — kd-session-enable is the sole config-first starter.
 # environment.d: session identity + the llvmpipe/GL display env for EVERY user manager.
 # user-cgroup-fix: defensive drop-in for the F44 systemd-259 user@.service cgroup EBUSY (#41278).
 COPY lineage-grd/gnome-shell-headless.service  /etc/systemd/user/gnome-shell-headless.service
@@ -99,7 +100,7 @@ COPY lineage-grd/kd-provision.service          /usr/lib/systemd/system/kd-provis
 # load-bearing; masking them would be the whack-a-mole over-reach the tier-1 rewrite avoids.
 # The dangling multi-user.target.wants/systemd-homed symlink (homed not installed) is removed for a clean audit.
 RUN systemctl enable kd-provision.service sshd.service \
-    && systemctl --global enable gnome-shell-headless.service gnome-remote-desktop-headless.service \
+    && systemctl --global enable gnome-shell-headless.service \
     && systemctl set-default multi-user.target \
     && systemctl mask gdm.service systemd-oomd.service systemd-oomd.socket \
         geoclue.service rtkit-daemon.service colord.service power-profiles-daemon.service \

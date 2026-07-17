@@ -549,7 +549,18 @@ def main():
         except Exception as exc:  # noqa: BLE001 — ANY single-user failure must honor US-#14:
             # rollback that user, never abort the boot on a worker (and never let an
             # unhandled traceback print, which could carry roster-adjacent content — E1).
-            # Only the exception TYPE is logged; messages may embed values.
+            # E1-SAFE DIAGNOSTIC (was TYPE-only): the phrase rides STDIN only and NO apply
+            # subprocess echoes stdin — useradd/setup_nested_podman take no secret; kd-cred pipes
+            # the phrase into chpasswd + grdctl, neither of which echoes it (verified in-box: a
+            # failing grdctl emits dconf/cert/errno text + the username [E6-disclosed], never the
+            # phrase). So a CalledProcessError.output is safe to log, and it is exactly what makes
+            # an admin die(4) exit=4 self-diagnosing at the gate (an early exit-force reaches no
+            # health probe, so this log line is the ONLY window onto the cause).
+            if isinstance(exc, subprocess.CalledProcessError):
+                # belt-and-braces E1: no apply subprocess echoes the phrase, but redact it anyway
+                # so this diagnostic can NEVER surface the secret even if a future tool did.
+                _o = (exc.output or "").replace(u["password"], "***").strip()
+                log(f"apply subprocess rc={exc.returncode}: {_o}")
             if u["_role"] == "admin":
                 rollback_user(name, created)
                 die(4, f"admin apply failed ({type(exc).__name__}) => abort "
@@ -583,7 +594,10 @@ def main():
         if se:
             try:
                 run([se, u["username"]], stdin_data=u["password"] + "\n")
-            except Exception as exc:  # noqa: BLE001 — type name only (E1)
+            except Exception as exc:  # noqa: BLE001 — E1-safe: phrase is stdin-only, unechoed
+                if isinstance(exc, subprocess.CalledProcessError):
+                    _o = (exc.output or "").replace(u["password"], "***").strip()
+                    log(f"session prestart rc={exc.returncode}: {_o}")
                 log(f"session prestart failed ({type(exc).__name__}) — doors still serve "
                     f"interactively: {u['username']}")
         else:
