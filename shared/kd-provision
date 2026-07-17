@@ -255,7 +255,7 @@ def validate(roster, uidmap):
             continue
         seen.add(name)
         users.append(dict(w, _role="worker"))
-    return users, excluded, endpoints, bool(box.get("shared_folder", False))
+    return users, excluded, endpoints, bool(box.get("shared_folder", False)), box.get("vault_repo")
 
 
 # ---------------------------------------------------------------------- uidmap (append-only)
@@ -355,7 +355,7 @@ def setup_nested_podman(name, uid, home, pw_ent):
     log(f"nested podman (B3): {name} sub{{u,g}}id band {band}:{NESTED_BAND}; fuse-overlayfs graphroot")
 
 
-def apply_user(u, uid, created):
+def apply_user(u, uid, created, vault_repo=None):
     """Pass-1 apply for one valid user. Secrets ride stdin only (E1)."""
     name = u["username"]
     if os.environ.get("KD_TEST_FAIL_APPLY") == name:
@@ -415,6 +415,7 @@ def apply_user(u, uid, created):
     # rides STDIN only (E1 — never argv/log/other-uid env); the identity fields (login/name/email/
     # provider) are non-secret argv. Run AS the user (its files are user-owned 0600). Skipped when
     # the user has no `vcs` block. check=False so a credential hiccup never rolls back the account.
+    # Runs BEFORE the vault clone below: a production private-GitHub vault clone uses this credential.
     vcs = u.get("vcs")
     aenv = hook("kd-agent-env")
     if vcs and aenv:
@@ -423,6 +424,16 @@ def apply_user(u, uid, created):
             stdin_data=vcs["token"] + "\n", check=False)
     elif vcs:
         log(f"hook absent (lands WP-13-agents): kd-agent-env — git identity for {name} not installed")
+
+    # vault (E4, WP-17): per-user ~/Vault clone + broadened .gitignore + fail-safe remote-protection
+    # gate. Runs AS the user (clone is user-owned, uses the user's own git credential — E1). Skipped
+    # when box.vault_repo is absent (E2 degrade). kd-vault-init is itself fail-safe (always exits 0,
+    # never brings the box down); check=False so a vault hiccup never rolls back the account (US-#14).
+    vinit = hook("kd-vault-init")
+    if vault_repo and vinit:
+        run(["runuser", "-u", name, "--", "env", f"HOME={home}", vinit, vault_repo], check=False)
+    elif vault_repo:
+        log(f"hook absent (lands WP-17): kd-vault-init — vault for {name} not initialized")
 
 
 def write_grants(u, endpoints):
@@ -521,7 +532,9 @@ def main():
     os.chown(grants_dir, 0, gid_of("kd-door"))
 
     uidmap = load_uidmap()
-    users, excluded, endpoints, want_shared = validate(roster, uidmap)
+    users, excluded, endpoints, want_shared, vault_repo = validate(roster, uidmap)
+    if not vault_repo:
+        log("vault (E4): box.vault_repo absent — vault sync disabled (E2 degrade, box serves)")
 
     # ---- pass 1: accounts + ALL credentials (US-#10: before any session enablement) ----
     applied = []
@@ -530,7 +543,7 @@ def main():
         name = u["username"]
         uid = allocate_uid(name, uidmap)
         try:
-            apply_user(u, uid, created)
+            apply_user(u, uid, created, vault_repo)
             write_grants(u, endpoints)
             applied.append(u)
         except Exception as exc:  # noqa: BLE001 — ANY single-user failure must honor US-#14:

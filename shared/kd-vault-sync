@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# kd-vault-sync (E4, WP-17) — ONE guarded sync cycle for the caller's ~/Vault clone. Runs AS the
+# vault-owning user (the driver does the runuser; a systemd user timer does it directly on L2).
+# Lineage-agnostic: identical logic on L1 and L2 — only the driver that CALLS it differs.
+#
+# The cycle (DESIGN §5, E4):
+#   stop-flag? → guarded COMMIT (local bulk-delete bound) → guarded FETCH/MERGE (inbound bulk-delete
+#   bound; conflict ⇒ merge --abort byte-identical restore + stop-flag + notify) → plain PUSH.
+#
+# FAIL-SAFE, never fail-open: a transient error (unreachable remote, push race) leaves the working
+# tree intact and returns 0 — the next cycle retries. A DANGEROUS event (mass delete either
+# direction, or a merge conflict) sets the durable stop-flag, notifies the user, and refuses to
+# proceed until a human clears the flag. The stop-flag is the durable signal; the desktop
+# notification is best-effort (it needs a live session bus, absent on a headless/SSH-only login).
+#
+# E1: no secret in argv/log — the git remote credential is the user's own gh headless helper
+# (their uid's env), never echoed here.
+set -u
+
+VAULT="${KD_VAULT_DIR:-$HOME/Vault}"
+STOPFLAG="${KD_VAULT_STOPFLAG:-$HOME/.kd/vault-stop}"
+READY="${KD_VAULT_READY:-$HOME/.kd/vault-ready}"   # kd-vault-init sets this iff remote is protected
+DELETE_FLOOR="${KD_VAULT_DELETE_FLOOR:-25}"   # bound = max(FLOOR, 10% of tracked)
+LOG(){ echo "kd-vault-sync[$(id -un)]: $*"; }
+
+# best-effort desktop notification (VST-#7): only if a session bus is reachable; never fatal.
+notify(){
+    LOG "NOTIFY: $*"
+    [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || return 0
+    command -v notify-send >/dev/null 2>&1 || return 0
+    notify-send -u critical "Knowledge vault" "$1" 2>/dev/null || true
+}
+
+set_stop(){ mkdir -p "$(dirname "$STOPFLAG")" 2>/dev/null; printf '%s\n' "$1" > "$STOPFLAG" 2>/dev/null || true; }
+
+# bound for a tracked-file count: max(FLOOR, ceil(10%)). NB two `local` lines, not one — under
+# `set -u`, `local n=$1 tenth=$((n+9))` references n before it is bound in this scope (bash gotcha).
+delete_bound(){ local n="$1"; local tenth=$(( (n + 9) / 10 )); [ "$tenth" -gt "$DELETE_FLOOR" ] && echo "$tenth" || echo "$DELETE_FLOOR"; }
+
+# --- preconditions -------------------------------------------------------------------------------
+[ -d "$VAULT/.git" ] || { LOG "no clone at $VAULT — nothing to sync (E2 degrade)"; exit 0; }
+cd "$VAULT" || { LOG "cannot cd $VAULT"; exit 0; }
+
+if [ -e "$STOPFLAG" ]; then
+    LOG "sync PAUSED — stop-flag present ($STOPFLAG: $(cat "$STOPFLAG" 2>/dev/null)). Clear it to resume."
+    exit 0
+fi
+if [ ! -e "$READY" ]; then
+    LOG "sync PAUSED — remote protection unverified (no $READY); kd-vault-init re-checks each boot (fail-safe)."
+    exit 0
+fi
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo main)"
+tracked="$(git ls-files | wc -l)"
+bound="$(delete_bound "$tracked")"
+
+# Git identity for EVERY commit-creating path — the commit AND the divergent (non-ff) merge, which
+# writes a merge commit and needs identity exactly like `git commit`. A provisioned kd user has NO
+# identity anywhere (kd-vault-init writes none; the driver's runuser env passes none), so a bare
+# `git merge` would die "unable to auto-detect email address" on a perfectly CLEAN divergent merge
+# and be misdiagnosed by the conflict branch as a conflict => a false durable stop-flag.
+GIT_ID=(-c user.name="${KD_VAULT_GIT_NAME:-knowledge-desktop}"
+        -c user.email="${KD_VAULT_GIT_EMAIL:-vault@knowledge-desktop.local}")
+
+# --- guarded COMMIT ------------------------------------------------------------------------------
+git add -A 2>/dev/null
+staged_del="$(git diff --cached --name-only --diff-filter=D 2>/dev/null | wc -l)"
+if [ "$staged_del" -gt "$bound" ]; then
+    git reset -q 2>/dev/null || true                     # unstage — do NOT commit the mass delete
+    set_stop "local mass-delete guard: $staged_del deletions > bound $bound (tracked $tracked)"
+    notify "Vault sync paused: $staged_del files were deleted locally (limit $bound). Nothing was pushed. Review your vault, then clear the stop-flag."
+    LOG "GUARD (local): $staged_del deletions > $bound — stop-flag set, NOT committed"
+    exit 3
+fi
+if ! git diff --cached --quiet 2>/dev/null; then
+    git "${GIT_ID[@]}" commit -q -m "vault-sync $(date -u +%FT%TZ) ${HOSTNAME:-kd}" 2>/dev/null \
+        && LOG "committed local changes (branch $branch)"
+fi
+
+# --- guarded FETCH / MERGE -----------------------------------------------------------------------
+if ! git fetch -q origin "$branch" 2>/dev/null; then
+    LOG "fetch failed (remote unreachable?) — leaving tree intact, will retry next cycle (fail-safe)"
+    exit 0                                                # transient: never stops the box
+fi
+remote_ref="origin/$branch"
+git rev-parse --verify -q "$remote_ref" >/dev/null 2>&1 || { LOG "no $remote_ref yet — pushing initial"; remote_ref=""; }
+
+if [ -n "$remote_ref" ]; then
+    # THREE-dot (merge-base → remote), NOT two-dot: `git diff A..B` is a DIRECT tree diff, so every
+    # file present locally but not yet on the remote — i.e. a locally-committed, not-yet-pushed note,
+    # the normal state after a bulk first-import — would count as a remote "deletion" and falsely
+    # trip this guard, wedging sync permanently. Three-dot (`git diff $(merge-base HEAD remote) remote`)
+    # counts ONLY files the remote actually deleted since the common ancestor.
+    inbound_del="$(git diff --name-only --diff-filter=D "HEAD...$remote_ref" 2>/dev/null | wc -l)"
+    if [ "$inbound_del" -gt "$bound" ]; then
+        set_stop "inbound mass-delete guard: $inbound_del deletions > bound $bound"
+        notify "Vault sync paused: the server has $inbound_del deletions (limit $bound). Your local copy is untouched. Review, then clear the stop-flag."
+        LOG "GUARD (inbound): $inbound_del deletions > $bound — stop-flag set, NOT merged"
+        exit 3
+    fi
+    # fast-forward first; only a genuine divergence needs a real merge
+    if ! git merge -q --ff-only "$remote_ref" 2>/dev/null; then
+        if ! git "${GIT_ID[@]}" merge -q --no-edit "$remote_ref" 2>/dev/null; then
+            git merge --abort 2>/dev/null || true        # byte-identical restore of pre-merge tree
+            set_stop "merge conflict on $branch vs $remote_ref"
+            notify "Vault sync paused: a merge conflict needs your attention. Your local copy was restored unchanged. Resolve on one device, then clear the stop-flag."
+            LOG "CONFLICT: merge --abort (tree restored), stop-flag set"
+            exit 3
+        fi
+        LOG "merged $remote_ref (divergent histories reconciled)"
+    fi
+fi
+
+# --- plain PUSH (server denies non-ff/deletes; a rejected race is harmless — retry next cycle) ----
+if git push -q origin "HEAD:$branch" 2>/dev/null; then
+    LOG "pushed $branch — in sync"
+else
+    LOG "push rejected (concurrent update?) — non-fatal, next cycle re-syncs (fail-safe)"
+fi
+exit 0

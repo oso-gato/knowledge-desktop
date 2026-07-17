@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# kd-vault-driver (E4, WP-17) — the L1 periodic driver. L1 is bash-PID-1 with no systemd --user, so
+# the 5-minute vault cadence cannot be a user timer (that is the L2 mechanism, rides WP-08). Instead
+# the entrypoint supervises ONE of these: every INTERVAL seconds it runs kd-vault-sync AS each
+# provisioned kd user (uid ≥ UID_BASE), so sync runs whether or not the user has a live session.
+#
+# Driver-level fail-safe: one user's sync failing (nonzero) never aborts the sweep or the driver —
+# each user is independent, the loop continues, the box keeps serving. The per-user guards
+# (stop-flag, vault-ready, delete bounds) live in kd-vault-sync; this only schedules + fans out.
+set -u
+
+INTERVAL="${KD_VAULT_INTERVAL:-300}"          # 5 min (DESIGN §5); overridable for the soak test
+UID_BASE="${KD_UID_BASE:-2000}"
+SYNC="${KD_VAULT_SYNC:-/usr/libexec/kd/kd-vault-sync}"
+ONESHOT="${KD_VAULT_DRIVER_ONESHOT:-0}"       # test seam: 1 = one sweep then exit
+LOG(){ echo "kd-vault-driver: $*"; }
+
+[ -x "$SYNC" ] || { LOG "kd-vault-sync not executable at $SYNC — driver idle"; exit 0; }
+
+sweep(){
+    local swept=0
+    while IFS=: read -r name _ uid _ _ home _; do
+        [ "$uid" -ge "$UID_BASE" ] 2>/dev/null || continue
+        [ "$uid" -lt 60000 ] || continue                       # skip nobody/systemd ranges
+        [ -d "$home/Vault/.git" ] || continue                  # no vault for this user — skip quietly
+        # capture the sync's own output into the driver log (guard-trip reasons + notifications must
+        # reach the container log, not just the durable stop-flag file) while preserving its rc.
+        local out; out="$(runuser -u "$name" -- env HOME="$home" "$SYNC" 2>&1)"; local rc=$?
+        [ -n "$out" ] && printf '%s\n' "$out" | while IFS= read -r l; do echo "kd-vault-driver: [$name] $l"; done
+        if [ "$rc" -eq 0 ]; then swept=$((swept+1))
+        else LOG "sync rc=$rc for $name (guard tripped or transient) — continuing (fail-safe)"; fi
+    done < <(getent passwd)
+    LOG "sweep complete: $swept vault(s) synced"
+}
+
+if [ "$ONESHOT" = 1 ]; then sweep; exit 0; fi
+
+LOG "started (interval ${INTERVAL}s)"
+while :; do
+    sweep
+    sleep "$INTERVAL" & wait $! || true
+done

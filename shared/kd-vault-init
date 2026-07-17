@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# kd-vault-init (E4, WP-17) — idempotent per-user vault bring-up, run AS the vault-owning user by
+# kd-provision (runuser). Args: <vault_repo_url>. Three jobs, each fail-SAFE (never stops the box):
+#   1. CLONE ~/Vault if absent (uses the user's own git credential helper — E1; a local/file remote
+#      needs none, which is the gate path). Unreachable ⇒ log alert, leave for next boot to retry.
+#      A pre-existing NON-clone ~/Vault (e.g. notes written while the first clone was unreachable)
+#      is NEVER deleted: the clone is WITHHELD + a distinct alert raised (data preserved), and the
+#      clone itself lands via a sibling temp dir, so failure cleanup removes only what THIS run made.
+#   2. SEED the broadened .gitignore (per-device volatile Obsidian state must never sync — E4).
+#   3. ASSERT the remote forbids history rewrite + branch deletion, and gate sync on it:
+#        confirmed protected     → touch ~/.kd/vault-ready   (sync allowed)
+#        unreachable / unproven  → remove ~/.kd/vault-ready + alert   (sync PAUSED, box serves)
+#        AFFIRMATIVELY unprotected → same pause + a distinct "ruleset-absent" alert
+#      vault-ready is re-evaluated every boot, so a transient outage self-heals with no human action;
+#      the human stop-flag (~/.kd/vault-stop) is reserved for genuine danger (mass-delete/conflict).
+set -u
+
+REPO="${1:-}"
+VAULT="${KD_VAULT_DIR:-$HOME/Vault}"
+READY="${KD_VAULT_READY:-$HOME/.kd/vault-ready}"
+GITIGNORE_SRC="${KD_VAULT_GITIGNORE_SRC:-/usr/libexec/kd/kd-vault-gitignore}"
+LOG(){ echo "kd-vault-init[$(id -un)]: $*"; }
+alert(){ LOG "ALERT: $*"; [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v notify-send >/dev/null 2>&1 \
+             && notify-send -u critical "Knowledge vault" "$1" 2>/dev/null || true; }
+
+[ -n "$REPO" ] || { LOG "no vault_repo — vault disabled (E2 degrade)"; exit 0; }
+mkdir -p "$(dirname "$READY")" 2>/dev/null
+
+# A local-path vault_repo (the gate's bare mirror, or a local deployment) is shared read-only across
+# uids, so git's dubious-ownership guard would refuse it. The roster explicitly DESIGNATED this path
+# as the vault source — the roster is the trust root — so trust exactly that path (scoped, not '*').
+# Production URLs (https/ssh) never take this branch and are unaffected.
+case "$REPO" in
+    /*|file://*|./*|../*) git config --global --add safe.directory "${REPO#file://}" 2>/dev/null || true ;;
+esac
+
+# --- 1. clone if absent ---------------------------------------------------------------------------
+if [ ! -d "$VAULT/.git" ]; then
+    # NEVER destroy pre-existing user data at the vault path: if the first clone was unreachable the
+    # box still serves ("will retry" alert) and the user may have written notes into ~/Vault since.
+    # rmdir folds away only an EMPTY leftover dir — it cannot remove content by construction.
+    rmdir "$VAULT" 2>/dev/null || true
+    if [ -e "$VAULT" ]; then
+        rm -f "$READY" 2>/dev/null || true
+        alert "Your vault folder already contains files that are not from the vault repository — sync is paused to protect them. Move them aside so the vault can initialize, then copy them back in."
+        LOG "GUARD: $VAULT holds pre-existing non-clone content — clone WITHHELD, data preserved (box serves)"
+        exit 0
+    fi
+    # Clone into a sibling temp dir, then move into place (-T: never nest into a dir that appeared
+    # meanwhile) — the failure path below can then only ever remove what THIS run created.
+    TMP="$(mktemp -d "$VAULT.cloning.XXXXXX" 2>/dev/null)" || { LOG "cannot create temp dir beside $VAULT"; exit 0; }
+    if git clone -q "$REPO" "$TMP" 2>/dev/null && mv -T "$TMP" "$VAULT" 2>/dev/null; then
+        LOG "cloned $VAULT"
+    else
+        rm -rf "$TMP" 2>/dev/null || true            # no half-clone left behind (temp dir only)
+        rm -f "$READY" 2>/dev/null || true
+        alert "Could not reach the vault repository — sync is paused. It will retry automatically."
+        LOG "clone failed (unreachable?) — will retry next boot (fail-safe, box serves)"
+        exit 0
+    fi
+fi
+cd "$VAULT" || { LOG "cannot cd $VAULT"; exit 0; }
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo main)"
+
+# --- 2. seed the broadened .gitignore (append our block once; committed by the first sync) --------
+if [ -r "$GITIGNORE_SRC" ] && ! grep -q 'knowledge-desktop vault' .gitignore 2>/dev/null; then
+    printf '\n' >> .gitignore 2>/dev/null || true
+    cat "$GITIGNORE_SRC" >> .gitignore 2>/dev/null || true
+    LOG "seeded broadened .gitignore (per-device Obsidian state excluded)"
+fi
+
+# --- 3. assert remote protection, gate sync on it -------------------------------------------------
+# returns 0 = confirmed protected; 1 = affirmatively unprotected; 2 = undeterminable/unreachable
+assert_protected(){
+    local url; url="$(git remote get-url origin 2>/dev/null)" || return 2
+    case "$url" in
+        # local / file remote (the gate mirror): read the bare repo's receive.* config directly
+        file://*|/*|./*|../*)
+            local bare="${url#file://}"
+            [ -d "$bare" ] || return 2
+            local nff del
+            nff="$(git -C "$bare" config --bool receive.denyNonFastForwards 2>/dev/null)"
+            del="$(git -C "$bare" config --bool receive.denyDeletes 2>/dev/null)"
+            [ "$nff" = true ] && [ "$del" = true ] && return 0 || return 1 ;;
+        # GitHub remote: query the branch's EFFECTIVE active rules. This endpoint
+        # (/repos/{o}/{r}/rules/branches/{branch}) returns only rules from ACTIVE rulesets that
+        # TARGET this branch — each element carries the rule `.type` — so enforcement==active and
+        # branch-targeting are already applied by the API. (The /rulesets LIST endpoint used before
+        # returns ruleset SUMMARIES with NO rule types, so a correctly-protected repo read as
+        # unprotected and vault-ready was withheld forever on the production path — the F2 bug.)
+        # Protected iff BOTH non_fast_forward (no history rewrite) AND deletion (no branch delete) apply.
+        https://github.com/*|git@github.com:*|ssh://git@github.com/*)
+            command -v gh >/dev/null 2>&1 || return 2
+            local slug; slug="$(printf '%s' "$url" | sed -E 's#(https://github.com/|git@github.com:|ssh://git@github.com/)##; s#\.git$##')"
+            local rs; rs="$(gh api "repos/$slug/rules/branches/$branch" --jq '[.[].type] | @csv' 2>/dev/null)" || return 2
+            printf '%s' "$rs" | grep -q non_fast_forward && printf '%s' "$rs" | grep -q deletion && return 0 || return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+if assert_protected; then
+    : > "$READY"
+    LOG "remote protection CONFIRMED (no-rewrite + no-delete) — sync enabled (branch $branch)"
+elif [ $? -eq 1 ]; then
+    rm -f "$READY" 2>/dev/null || true
+    alert "The vault repository is NOT protected against history rewrite/deletion — sync paused until it is. Enable the server ruleset."
+    LOG "GUARD: remote AFFIRMATIVELY unprotected — sync disabled (vault-ready withheld)"
+else
+    rm -f "$READY" 2>/dev/null || true
+    alert "Could not verify vault repository protection — sync paused, will retry automatically."
+    LOG "remote protection UNVERIFIED (unreachable/unknown) — sync disabled this boot (fail-safe)"
+fi
+exit 0
