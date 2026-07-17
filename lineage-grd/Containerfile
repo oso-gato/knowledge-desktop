@@ -83,26 +83,26 @@ COPY lineage-grd/kd-provision.service          /usr/lib/systemd/system/kd-provis
 # seatless lineage has no system graphical session — the per-user headless sessions ride the
 # lingering user managers). Unmasked, gdm would fail on the missing seat and flunk kd-health's
 # zero-failed-units bar.
-# Mask the PROVEN-failing daemons that are ALSO clearly unneeded for a headless remote desktop —
-# purely for cleanliness (kd-health no longer requires zero failed units; see kd-health tier-1: it
-# tolerates the incidental degradation a rootless GNOME container always has and proves door health
-# by PROBING the doors). Masking here just keeps the journal + --failed clean and turns a
-# dbus-activated request into a handled "unit is masked" instead of a crash-loop. NOT cargo-cult and
-# NOT over-reach: only units OBSERVED failing in the gate journal AND irrelevant to RDP/VNC:
-#  - systemd-oomd (unit+socket): User=systemd-oom + sandboxing hard-fails CAP_SYS_ADMIN
-#    (systemd#34565); useless under a shared kernel. Confirmed #23 @32f96ee.
-#  - geoclue (User=geoclue, location) + rtkit-daemon (RealtimeKit RT scheduling): the gnome-shell/
-#    portal stack pokes them; both FAILED in #23 @1431a6c and neither matters headless (pipewire
-#    runs fine without RT priority). Masking rtkit gives xdg-desktop-portal a clean masked response.
-# We deliberately do NOT mask polkit/upower/colord/power-profiles etc. — the honest health bar
-# tolerates their incidental failure, and masking load-bearing-ish daemons pre-emptively would be
-# the whack-a-mole over-reach the tier-1 rewrite exists to avoid.
+# Mask the desktop-IRRELEVANT daemons that CANNOT run in this rootless no-CAP_SYS_ADMIN container
+# (they only crash-loop + clutter). This is CLEANLINESS/minimalism, working WITH the honest health
+# bar (kd-health tier-1 no longer counts failed units — it tolerates incidental degradation and
+# proves door health by PROBING the doors). Two reasons masking still earns its place: (1) a masked
+# dbus-activated unit returns a clean "unit is masked" to its caller instead of a crash-loop that
+# spams the journal + sits `--failed`; (2) empirically the last container that stayed UP the full
+# 240s health window (#23 @4a4bec0) had exactly this set masked — leaving colord/power-profiles
+# UNMASKED (@5f8de43) coincided with an 8s exit=4, so keeping them masked is the known-stable config.
+# The set — all irrelevant to headless RDP/VNC (no OOM/location/RT-audio/colour/power-panel matters):
+#  - systemd-oomd (unit+socket): User=systemd-oom + sandboxing hard-fails CAP_SYS_ADMIN (systemd#34565).
+#  - geoclue (location) + rtkit-daemon (RT scheduling — pipewire runs fine without it): FAILED @1431a6c.
+#  - colord (display colour) + power-profiles-daemon: same gnome-shell-poked, container-incompatible class.
+# polkit/upower are deliberately LEFT unmasked — the honest bar tolerates them and they are more
+# load-bearing; masking them would be the whack-a-mole over-reach the tier-1 rewrite avoids.
 # The dangling multi-user.target.wants/systemd-homed symlink (homed not installed) is removed for a clean audit.
 RUN systemctl enable kd-provision.service sshd.service \
     && systemctl --global enable gnome-shell-headless.service gnome-remote-desktop-headless.service \
     && systemctl set-default multi-user.target \
     && systemctl mask gdm.service systemd-oomd.service systemd-oomd.socket \
-        geoclue.service rtkit-daemon.service \
+        geoclue.service rtkit-daemon.service colord.service power-profiles-daemon.service \
     && rm -f /etc/systemd/system/multi-user.target.wants/systemd-homed.service
 
 # ---- A8 terminal door config (lineage-agnostic; reuses the L1-proven files verbatim) ---------
@@ -169,7 +169,7 @@ RUN set -e \
     && ls /usr/lib64/security/pam_systemd.so >/dev/null 2>&1 || { echo "L2 MISSING: pam_systemd.so — user@UID would start without \$XDG_RUNTIME_DIR (systemd-pam not installed)"; exit 1; } \
     && grep -rq 'pam_systemd' /etc/pam.d/system-auth || { echo "L2: pam_systemd not wired into system-auth"; exit 1; } \
     && test -f /etc/systemd/system/user@.service.d/50-xdg-runtime-dir.conf || { echo "L2: XDG_RUNTIME_DIR drop-in missing"; exit 1; } \
-    && for m in systemd-oomd geoclue rtkit-daemon; do [ "$(readlink /etc/systemd/system/$m.service)" = "/dev/null" ] || { echo "L2: $m.service not masked — a proven-failing unneeded daemon that clutters the journal"; exit 1; }; done \
+    && for m in systemd-oomd geoclue rtkit-daemon colord power-profiles-daemon; do [ "$(readlink /etc/systemd/system/$m.service)" = "/dev/null" ] || { echo "L2: $m.service not masked — a container-incompatible unneeded daemon"; exit 1; }; done \
     && test -f /usr/lib/systemd/user/gnome-remote-desktop-headless.service || { echo "L2 MISSING: shipped grd headless user unit (override target)"; exit 1; } \
     && test -f /etc/dconf/db/local || { echo "L2: dconf db not compiled (ptyxis default, V24)"; exit 1; } \
     && test -L /etc/systemd/system/multi-user.target.wants/kd-provision.service || { echo "L2: kd-provision.service not enabled"; exit 1; } \
