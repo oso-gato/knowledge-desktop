@@ -37,9 +37,16 @@ set -euo pipefail
 # now actually implemented — the old defaults (TCP 127.0.0.1 as `guacamole`) required the scram
 # password this tool never holds, an unauthenticatable path (WP-11 fix). kd-provision invokes us
 # as root; re-exec as kdweb BEFORE any stdin read (runuser preserves stdin, so the E1 phrase
-# still arrives on fd 0).
+# still arrives on fd 0). WP-14: the ROOT half also captures the user's GRANTS file (0640
+# root:kd-door — kdweb cannot read it) into KD_TILES for the kdweb half. Tile lines are
+# IDENTITIES (tile/host/port/user — E6 R19-class), never secrets, so the env ferry is E1-clean;
+# `env` pins the var through runuser's environment handling.
 if [ "$(id -u)" = 0 ]; then
-    exec runuser -u kdweb -- "$0" "$@"
+    KD_TILES=""
+    if [ "${1:-}" = apply-user ] && [ -n "${2:-}" ] && [ -r "${KD_STATE:-/var/lib/kd}/grants/${2}" ]; then
+        KD_TILES="$(cat "${KD_STATE:-/var/lib/kd}/grants/${2}")"
+    fi
+    exec runuser -u kdweb -- env KD_TILES="$KD_TILES" "$0" "$@"
 fi
 PGHOST="${KD_PGHOST:-/run/postgresql}"     # a directory ⇒ unix socket ⇒ peer auth
 PGDATABASE="${KD_PGDATABASE:-guacamole_db}"
@@ -123,6 +130,67 @@ ON CONFLICT DO NOTHING;
 SQL
         echo "kd-web-sync: applied desktop tile for $user (vnc 127.0.0.1:$port, 32bpp)"
     fi
+
+    # ---- WP-14: FLEET TILES (A10) — one guac SSH connection per GRANTED endpoint ----
+    # KD_TILES carries the user's grants file (ferried by the root half above): one line per
+    # granted tile, `<tile> <host> <port> <user>`, exact-match fail-closed upstream
+    # (kd-provision regenerates it every run). The OPTIONAL per-user tile private key rides the
+    # REST of stdin after the phrase line (E1: a secret, never argv/env; kd-provision sends
+    # phrase\n then the PEM when the roster carries tile_ssh_key). Rows are name-keyed
+    # `<user>-tile-<tile>`, READ-granted to THIS user's entity only (A10/A9), and REVOKED by
+    # regeneration: any `<user>-tile-*` row whose tile is no longer granted is DELETED (D5 —
+    # the guac schema cascades its params + permissions). Key-less tiles still row (Guacamole
+    # prompts at connect — an honest interactive fallback, disclosed).
+    tile_key="$(cat || true)"                      # rest of stdin = optional PEM (empty if none)
+    keep_list=""                                   # SQL list of connection names to KEEP
+    while IFS=' ' read -r t_name t_host t_port t_user; do
+        [ -n "$t_name" ] || continue
+        # belts (roster-validated upstream; value-free on violation): identifiers + digits only
+        case "$t_name" in *[!a-z0-9-]*) echo "kd-web-sync: bad tile name (value-free) — skipped" >&2; continue;; esac
+        case "$t_user" in *[!a-zA-Z0-9._-]*|'') echo "kd-web-sync: bad tile user (value-free) — skipped" >&2; continue;; esac
+        case "$t_port" in *[!0-9]*|'') echo "kd-web-sync: bad tile port (value-free) — skipped" >&2; continue;; esac
+        case "$t_host" in *[!a-zA-Z0-9._-]*|'') echo "kd-web-sync: bad tile host (value-free) — skipped" >&2; continue;; esac
+        conn="${user}-tile-${t_name}"
+        keep_list="${keep_list:+$keep_list, }'$conn'"
+        key_sql="${tile_key//\'/\'\'}"
+        psql_q <<SQL
+INSERT INTO guacamole_connection (connection_name, protocol)
+SELECT '$conn', 'ssh'
+WHERE NOT EXISTS (SELECT 1 FROM guacamole_connection
+                  WHERE connection_name='$conn' AND parent_id IS NULL);
+DELETE FROM guacamole_connection_parameter
+ WHERE connection_id = (SELECT connection_id FROM guacamole_connection
+                        WHERE connection_name='$conn' AND parent_id IS NULL);
+INSERT INTO guacamole_connection_parameter (connection_id, parameter_name, parameter_value)
+SELECT c.connection_id, p.name, p.value
+FROM (SELECT connection_id FROM guacamole_connection
+      WHERE connection_name='$conn' AND parent_id IS NULL) c,
+     (VALUES ('hostname','$t_host'),
+             ('port','$t_port'),
+             ('username','$t_user')) AS p(name, value);
+INSERT INTO guacamole_connection_parameter (connection_id, parameter_name, parameter_value)
+SELECT connection_id, 'private-key', '$key_sql'
+FROM guacamole_connection WHERE connection_name='$conn' AND parent_id IS NULL
+  AND length('$key_sql') > 0;
+INSERT INTO guacamole_connection_permission (entity_id, connection_id, permission)
+SELECT $eid, connection_id, 'READ'
+FROM guacamole_connection WHERE connection_name='$conn' AND parent_id IS NULL
+ON CONFLICT DO NOTHING;
+SQL
+        echo "kd-web-sync: applied fleet tile $t_name for $user (ssh ${t_host}:${t_port})"
+    done <<< "${KD_TILES:-}"
+    # REVOCATION by regeneration (A10/D5): drop this user's tile rows no longer granted.
+    # DOUBLE-scoped: the `<user>-tile-` name key AND this user's OWN entity permission — so the
+    # desktop tile (different name shape) and ANY other user's rows (different entity, even under
+    # a colliding name like user `gw1` vs user `gw1-tile-x`) are untouchable by construction.
+    psql_q <<SQL
+DELETE FROM guacamole_connection
+ WHERE parent_id IS NULL
+   AND connection_name LIKE '${user}-tile-%'
+   AND connection_id IN (SELECT connection_id FROM guacamole_connection_permission
+                         WHERE entity_id = $eid)
+   ${keep_list:+AND connection_name NOT IN ($keep_list)};
+SQL
     ;;
 disable-user)
     # D5 KEYSTONE: set disabled, but DO NOT DELETE the user row or its TOTP attribute rows —
