@@ -403,10 +403,13 @@ def apply_user(u, uid, created, vault_repo=None):
     # an identity, not a secret (E1 holds; usernames already appear in logs, E6 R19-class).
     # kd-web-sync derives the user's stable L1 VNC tile port from it (WP-11: 5900 + uid -
     # UID_BASE — the same arithmetic doors-agent uses), so the connection row and the listener
-    # agree with no cross-container runtime lookup.
+    # agree with no cross-container runtime lookup. WP-14: the OPTIONAL per-user tile private
+    # key (roster tile_ssh_key — the A10 fleet-tile credential) rides the SAME stdin AFTER the
+    # phrase line (E1: a secret, never argv/env); kd-web-sync reads line 1 = phrase, rest = PEM.
     ws = hook("kd-web-sync")
     if ws:
-        run([ws, "apply-user", name, str(uid)], stdin_data=u["password"] + "\n")
+        run([ws, "apply-user", name, str(uid)],
+            stdin_data=u["password"] + "\n" + (u.get("tile_ssh_key") or ""))
     else:
         log(f"hook absent (lands WP-10): kd-web-sync — web identity for {name} not synced")
 
@@ -543,8 +546,12 @@ def main():
         name = u["username"]
         uid = allocate_uid(name, uidmap)
         try:
-            apply_user(u, uid, created, vault_repo)
+            # grants BEFORE apply (WP-14): apply_user's kd-web-sync hook reads the user's grants
+            # file to sync the fleet-tile rows — written after, the first boot would sync ZERO
+            # tiles and only converge a boot late. write_grants needs nothing from apply_user,
+            # and rollback_user already unlinks the grants file on a failed apply (US-#14).
             write_grants(u, endpoints)
+            apply_user(u, uid, created, vault_repo)
             applied.append(u)
         except Exception as exc:  # noqa: BLE001 — ANY single-user failure must honor US-#14:
             # rollback that user, never abort the boot on a worker (and never let an
