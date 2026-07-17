@@ -38,9 +38,14 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         python3 shadow-utils tigervnc-server-common tigervnc-x11-server \
         acl procps-ng glibc-langpack-en \
         openssh-server mosh tmux \
+        podman crun passt fuse-overlayfs \
     && dnf clean all
 # WP-13 (A8 terminal door): openssh-server (key-only, config below) + mosh (roaming UDP) + tmux
 # (the one persistent per-user session). git-core arrives with the toolset (WP-15).
+# WP-16 (B3 nested rootless podman): podman + crun (OCI runtime) + passt/pasta (rootless net) +
+# fuse-overlayfs (the PINNED mount program — determinism across host classes + the gate, [ADJ-12]).
+# shadow-utils (already above) provides newuidmap/newgidmap for the per-user subuid bands
+# kd-provision writes. Per-user storage.conf + graphroot on the /home volume are provisioned at boot.
 
 # A8 door config: key-only least-privilege sshd + the tmux auto-attach profile (ssh AND mosh).
 COPY lineage-xrdp/sshd-kd.conf /etc/ssh/sshd_config.d/10-kd.conf
