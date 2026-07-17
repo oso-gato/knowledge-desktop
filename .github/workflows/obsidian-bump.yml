@@ -1,0 +1,68 @@
+# obsidian-bump.yml (WP-19, F3) — the class-(c) pin's CURRENCY mechanism (challenge VST-#13):
+# a scheduled job that checks the latest Obsidian release against the ARG pins and opens a
+# version+sha256 BUMP PR when they trail. The PR then rides the NORMAL gate (the build's
+# fail-closed `sha256sum -c` is the enforcement — this job is a proposer, never a trust anchor;
+# a wrong sha here simply fails the candidate build). Built-in token only (Principle 8).
+#
+# FAIL-CLOSED end to end: the tarball is fetched over TLS from the pinned canonical channel
+# (github.com/obsidianmd/obsidian-releases — the same host the Containerfiles ADD from), the
+# sha256 is computed from the ACTUAL artifact, and any fetch/parse failure exits nonzero with
+# NO PR. Both lineage Containerfiles are bumped IN LOCKSTEP (grep -c asserts both changed) —
+# a half-bump would fork the toolset across lineages.
+name: obsidian-bump
+on:
+  schedule:
+    - cron: '43 5 * * 1'   # Mondays 05:43 UTC — after the weekly rebuild, so a bump PR is never
+                           # racing the cron publish of the previous pin
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check latest release vs the pinned ARG
+        id: check
+        run: |
+          set -euo pipefail
+          latest="$(curl -fsSL --max-time 30 https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')"
+          pinned="$(grep -oP '^ARG OBSIDIAN_VERSION=\K.+' lineage-xrdp/Containerfile)"
+          echo "latest=$latest pinned=$pinned"
+          # both lineages must carry the SAME pin before we touch anything (lockstep precondition)
+          pinned_grd="$(grep -oP '^ARG OBSIDIAN_VERSION=\K.+' lineage-grd/Containerfile)"
+          [ "$pinned" = "$pinned_grd" ] || { echo "PIN DRIFT between lineages ($pinned vs $pinned_grd) — refusing to bump on top of drift"; exit 1; }
+          if [ "$latest" = "$pinned" ]; then echo "current — nothing to do"; echo "bump=0" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "bump=1" >> "$GITHUB_OUTPUT"; echo "latest=$latest" >> "$GITHUB_OUTPUT"
+      - name: compute the new sha256 from the real artifact (fail-closed)
+        if: steps.check.outputs.bump == '1'
+        id: sha
+        run: |
+          set -euo pipefail
+          v="${{ steps.check.outputs.latest }}"
+          curl -fsSL --max-time 300 -o /tmp/obsidian.tar.gz \
+            "https://github.com/obsidianmd/obsidian-releases/releases/download/v${v}/obsidian-${v}.tar.gz"
+          sha="$(sha256sum /tmp/obsidian.tar.gz | cut -d' ' -f1)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"; echo "obsidian $v sha256=$sha"
+      - name: open the lockstep bump PR
+        if: steps.check.outputs.bump == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v="${{ steps.check.outputs.latest }}"; sha="${{ steps.sha.outputs.sha }}"
+          b="chore/obsidian-${v}"
+          git checkout -b "$b"
+          sed -i "s|^ARG OBSIDIAN_VERSION=.*|ARG OBSIDIAN_VERSION=${v}|; s|^ARG OBSIDIAN_SHA256=.*|ARG OBSIDIAN_SHA256=${sha}|" \
+            lineage-xrdp/Containerfile lineage-grd/Containerfile
+          # LOCKSTEP assert: exactly 2 files carry the new pin, or refuse to push a half-bump
+          n="$(grep -l "^ARG OBSIDIAN_VERSION=${v}$" lineage-xrdp/Containerfile lineage-grd/Containerfile | wc -l)"
+          [ "$n" = 2 ] || { echo "half-bump ($n/2 files) — refusing"; exit 1; }
+          git config user.name "kd-obsidian-bump"; git config user.email "ci@knowledge-desktop.local"
+          git commit -am "chore: bump Obsidian ${v} (sha256 ${sha:0:12}…) — F3 currency, both lineages"
+          git push -u origin "$b"
+          gh pr create --title "chore: bump Obsidian to ${v} (F3 currency)" --body "$(printf 'Automated WP-19 F3 bump: Obsidian **%s**, sha256 \`%s\` — computed from the canonical release artifact over TLS; the candidate build re-verifies it fail-closed (`sha256sum -c`). Both lineages bumped in lockstep. Rides the normal gate: label + host live-gate + fitness -> poller.\n' "$v" "$sha")"
+          gh pr edit "$b" --add-label live-validate || true
