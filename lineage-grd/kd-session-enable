@@ -29,8 +29,14 @@ run_user(){ # run AS the user against their live session bus; non-interactive (n
     runuser -l "$user" -c "export XDG_RUNTIME_DIR=/run/user/${uid} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus; $*"
 }
 
-# pipewire + wireplumber FIRST — grd's screencast dies (0x904) without a session manager
-run_user 'systemctl --user enable --now pipewire.socket pipewire-pulse.socket wireplumber.service'
+# pipewire + wireplumber FIRST — grd's screencast dies (0x904) without a session manager.
+# ONLY these two units (matching grd's own After=/Wants= graph in grd-headless-override.conf):
+# NOT pipewire-pulse.socket — that is the PulseAudio-compat shim from the separate `pipewire-pulse`
+# subpackage, which weak-deps-off does NOT install (gnome-remote-desktop hard-pulls only `pipewire`),
+# is audio-only (screencast uses pipewire directly), and out of the WP-08 skeleton scope. Naming a
+# non-existent unit made `systemctl enable` (validated atomically) fail rc=1 under set -e, aborting
+# the whole prestart before any door bound — every RDP/VNC port stayed shut (#23 host-gate RED).
+run_user 'systemctl --user enable --now pipewire.socket wireplumber.service'
 
 # per-user RDP TLS cert, once (grd RDP will NOT bind without cert+key — enforce the ordering:
 # tls + creds + port THEN enable, or the listener never appears and the gate sees no door)
