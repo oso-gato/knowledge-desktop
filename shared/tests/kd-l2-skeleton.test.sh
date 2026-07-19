@@ -80,17 +80,20 @@ ck "dconf source: ptyxis default (V24, GNOME mechanism)" etc/dconf/db/local.d/00
 fck "dconf db compiled"              etc/dconf/db/local
 ck "claude update-lock ([ADJ-16])"   etc/claude-code/managed-settings.json '"DISABLE_UPDATES": *"1"'
 
-# the glue (provisioning + L2 hooks + reused VNC probes + agents)
+# the glue (provisioning + session hooks + agents). NO VNC probes: this primary lineage serves no
+# native VNC (grd VNC disabled — DESIGN §2 note (j)), so kd-vnc-login/kd-vnc-check are NOT shipped.
 for f in usr/libexec/kd/kd-provision usr/libexec/kd/kd-cred usr/libexec/kd/kd-session-enable \
-         usr/local/bin/kd-health usr/libexec/kd/kd-agent-env usr/libexec/kd/kd-agent-run \
-         usr/libexec/kd/kd-vnc-login usr/libexec/kd/kd-vnc-check; do
+         usr/local/bin/kd-health usr/libexec/kd/kd-agent-env usr/libexec/kd/kd-agent-run; do
     xck "glue present + executable: $(basename "$f")" "$f"
 done
-# the L2 kd-health is the L2 one (not the L1-hardcoded shared file)
-ck "kd-health is the L2 tier (systemd authority)" usr/local/bin/kd-health 'is-system-running'
-# L1-only pieces must NOT leak in (an UNTRUE assembly)
-if tar -tf "$TARF" usr/local/bin/kd-entrypoint >/dev/null 2>&1; then echo "FAIL L1 entrypoint leaked into L2"; fails=$((fails+1)); else echo "ok   no L1 entrypoint leak"; fi
-if tar -tf "$TARF" usr/libexec/kd/doors-agent >/dev/null 2>&1; then echo "FAIL L1 doors-agent leaked into L2"; fails=$((fails+1)); else echo "ok   no L1 doors-agent leak"; fi
+# grd VNC is DROPPED: kd-session-enable disables it and the VNC probe tools are not shipped
+ck "kd-session-enable disables grd VNC (RDP-native lineage)" usr/libexec/kd/kd-session-enable 'grdctl --headless vnc disable'
+if tar -tf "$TARF" usr/libexec/kd/kd-vnc-login >/dev/null 2>&1; then echo "FAIL VNC probe leaked into an RDP-only lineage"; fails=$((fails+1)); else echo "ok   no VNC probe (native VNC dropped)"; fi
+# kd-health is this lineage's own (not the Lineage-2 xrdp-hardcoded shared file)
+ck "kd-health is the systemd/GRD tier (systemd authority)" usr/local/bin/kd-health 'is-system-running'
+# Lineage-2 (XRDP) pieces must NOT leak in (an UNTRUE assembly)
+if tar -tf "$TARF" usr/local/bin/kd-entrypoint >/dev/null 2>&1; then echo "FAIL XRDP entrypoint leaked into the GRD lineage"; fails=$((fails+1)); else echo "ok   no XRDP entrypoint leak"; fi
+if tar -tf "$TARF" usr/libexec/kd/doors-agent >/dev/null 2>&1; then echo "FAIL XRDP doors-agent leaked into the GRD lineage"; fails=$((fails+1)); else echo "ok   no XRDP doors-agent leak"; fi
 
 echo
 if [ "$fails" -eq 0 ]; then echo "KD-L2-SKELETON: GREEN (build + assembly; runtime = host-gate)"; else echo "KD-L2-SKELETON: RED ($fails failed)"; exit 1; fi

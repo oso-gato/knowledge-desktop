@@ -1,4 +1,4 @@
-# knowledge-desktop — LINEAGE 2: GRD / Wayland / GNOME (DESIGN.md §2)
+# knowledge-desktop — LINEAGE 1 (primary): GRD / Wayland / GNOME (DESIGN.md §2)
 # WP-08 WALKING SKELETON: a real headless GNOME desktop image — per-user lingering
 # `systemd --user` managers each running `gnome-shell --headless` (Wayland, llvmpipe software
 # rendering) + `gnome-remote-desktop-headless` serving RDP+VNC on per-user fixed ports; systemd
@@ -183,21 +183,20 @@ RUN set -e \
     && echo "L2 (WP-08) assembled: GNOME-headless + grd doors + toolset obsidian-${OBSIDIAN_VERSION}"
 
 # CHURN-LATE: repo-owned glue (shared provisioning + the L2 hooks + the reused VNC probes).
-# NOT copied (L1-only): entrypoint-l1.sh, startwm-kd, doors-agent, xorg.conf, shared/kd-health
-# (L1-hardcoded — the L2 kd-health below is its own file), kd-vault-driver. DEFERRED: the vault
-# trio (kd-vault-sync/init/gitignore) rides the WP-17 L2 half (the per-user systemd timer).
+# NOT copied: the Lineage-2 (XRDP) session glue (entrypoint-l1.sh, startwm-kd, doors-agent,
+# xorg.conf, shared/kd-health [xrdp-hardcoded — this lineage's kd-health is its own file],
+# kd-vault-driver) AND the VNC probe tools (kd-vnc-login/kd-vnc-check) — this primary lineage
+# serves NO native VNC (DESIGN §2 note (j): grd VNC disabled), so the RFB probe has no door to test.
+# DEFERRED: the vault trio (kd-vault-sync/init/gitignore) rides the WP-17 half (the per-user timer).
 COPY shared/kd-provision            /usr/libexec/kd/kd-provision
 COPY lineage-grd/kd-cred            /usr/libexec/kd/kd-cred
 COPY lineage-grd/kd-session-enable  /usr/libexec/kd/kd-session-enable
 COPY lineage-grd/kd-health          /usr/local/bin/kd-health
 COPY shared/kd-agent-env            /usr/libexec/kd/kd-agent-env
 COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
-COPY gate/probe/kd-vnc-login        /usr/libexec/kd/kd-vnc-login
-COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
 RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/local/bin/kd-health \
-        /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run \
-        /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check
+        /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run
 
 ENTRYPOINT ["/sbin/init"]
 STOPSIGNAL SIGRTMIN+3

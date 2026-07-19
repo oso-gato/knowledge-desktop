@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# kd-health (LINEAGE 2 — GRD/Wayland/GNOME, systemd PID 1; WP-08). The TRUTHFUL health authority
+# kd-health (LINEAGE 1 — GRD/Wayland/GNOME, systemd PID 1; WP-08). The TRUTHFUL health authority
 # (F2/N5): real process + real TCP answers, never a cached flag alone. Its own file — shared/
-# kd-health is L1-hardcoded (xrdp-sesman/:3389/x0vncserver) and would falsely assert L1 daemons
-# that do not exist here (an UNTRUE health claim, N4).
+# kd-health is Lineage-2-hardcoded (xrdp-sesman/:3389/x0vncserver) and would falsely assert
+# Lineage-2 daemons that do not exist here (an UNTRUE health claim, N4).
 #
 # Tiers:
 #   1. INIT: systemd reached a STABLE state (running|degraded) AND the two LOAD-BEARING system
@@ -13,16 +13,17 @@
 #      (polkit, upower, and the geoclue/rtkit/colord/power-profiles class we mask) — NONE of which
 #      is what makes the DESKTOP healthy, and requiring zero-failed is unbounded whack-a-mole that
 #      a Fedora update re-breaks. The REAL door/session health is proven positively by tiers 2-4
-#      (each user@uid active + RDP/VNC ports answer) + PROBE_grd's port census — grd and gnome-shell
+#      (each user@uid active + the RDP port answers) + PROBE_grd's port census — grd and gnome-shell
 #      are USER services whose failures never even move the system-level is-system-running, so the
 #      old system bar was never a door-health proxy anyway (N4/N5 honest: assert what MUST hold,
 #      tolerate incidental degradation, prove the doors by probing them).
 #   2. E2: provisioning completed (/run/kd/provision-complete — kd-provision is shared).
-#   3. PER-USER DOORS (C3 warm sessions, unaided): for EVERY provisioned user (uid>=2000), the
-#      lingering user@uid manager is active AND both grd doors answer a REAL TCP connect on the
-#      uid-derived fixed ports (RDP 3389+off, VNC 5900+off — the [ADJ-34] arithmetic). Strict by
-#      design; HealthStartPeriod covers the slow first GNOME boot. If the gate proves this too
-#      brittle, the named relaxation is "≥1 user's doors answer" — recorded, not silent.
+#   3. PER-USER DOOR (C3 warm sessions, unaided): for EVERY provisioned user (uid>=2000), the
+#      lingering user@uid manager is active AND grd's RDP door answers a REAL TCP connect on the
+#      uid-derived fixed port (RDP 3389+off — the [ADJ-34] arithmetic). Native VNC is DROPPED on
+#      this lineage (DESIGN §2 note (j)), so there is no VNC door to probe. Strict by design;
+#      HealthStartPeriod covers the slow first GNOME boot. If the gate proves this too brittle, the
+#      named relaxation is "≥1 user's RDP door answers" — recorded, not silent.
 #   4. A8 SSH door: sshd alive + :22 answers.
 set -u
 fail(){ echo "kd-health: UNHEALTHY — $*"; exit 1; }
@@ -46,7 +47,6 @@ while IFS=: read -r name _ uid _; do
     systemctl is-active "user@${uid}.service" >/dev/null 2>&1 || fail "user@${uid} (${name}) manager down"
     off=$(( uid - 2000 ))
     timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$(( 3389 + off ))" 2>/dev/null || fail "no RDP answer for ${name} :$(( 3389 + off ))"
-    timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$(( 5900 + off ))" 2>/dev/null || fail "no VNC answer for ${name} :$(( 5900 + off ))"
 done < <(getent passwd)
 [ "$found" = 1 ] || fail "no provisioned users (uid>=2000)"
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# kd-cred (LINEAGE 2 — GRD/Wayland/GNOME) — the per-lineage door-credential installer
+# kd-cred (LINEAGE 1 — GRD/Wayland/GNOME) — the per-lineage door-credential installer
 # (DESIGN.md §4/§8; WP-06 core, WP-08 live). Driven ONLY by kd-provision; the ONE phrase arrives
 # on STDIN (E1: never argv, never env). Door derivations on this lineage:
 #   - Unix shadow (yescrypt via chpasswd) — SSH/console identity (A12)
 #   - grd RDP store: the FULL phrase, via grdctl piped stdin (V17)
-#   - grd VNC store: EXACTLY the first 8 chars (A13 truncation rule)
-# `revoke <user>` (D5): clears the grd store (challenge US-#11's revoke verb).
+# NO grd VNC credential — native VNC is DROPPED on this lineage (DESIGN §2 note (j)); RDP is the
+# door. The A13 first-8 VNC-truncation rule applies only to Lineage 2's (XRDP) VNC door.
+# `revoke <user>` (D5): clears the grd RDP store (challenge US-#11's revoke verb).
 #
 # CREDENTIAL-ONLY BY DESIGN (the WP-08 pass split): this runs in kd-provision PASS 1 — BEFORE any
 # linger, so the user has NO live session bus. `grdctl --headless … set-credentials/set-password`
@@ -47,20 +48,18 @@ install)
         # ENOENT here would throw up into kd-provision's apply_user => admin die(4) => exit-force
         # (a candidate for the observed 8s exit=4). Create it as the user so ownership is correct.
         grd_as_user 'mkdir -p "$HOME/.local/share/gnome-remote-desktop"'
-        # V17: credentials via piped stdin — never argv (E1)
+        # V17: RDP credentials via piped stdin — never argv (E1). No VNC password: VNC is disabled.
         printf '%s\n' "$phrase"        | grd_as_user "grdctl --headless rdp set-credentials '$user'"
-        printf '%s\n' "${phrase:0:8}"  | grd_as_user "grdctl --headless vnc set-password"
     else
         # WP-08 ships grdctl and the build ASSERTS it — its absence here is a broken image, and a
         # silent skip would ship doors with no credentials (an UNTRUE "provisioned" claim, N4).
-        echo "kd-cred: grdctl absent — broken L2 image (the build asserts grdctl); failing the install" >&2
+        echo "kd-cred: grdctl absent — broken Lineage-1 image (the build asserts grdctl); failing the install" >&2
         exit 1
     fi
     ;;
 revoke)
     if command -v grdctl >/dev/null; then
         grd_as_user "grdctl --headless rdp clear-credentials" || true
-        grd_as_user "grdctl --headless vnc clear-password"    || true
     else
         echo "kd-cred: grdctl absent — grd store revoke SKIPPED (nothing to clear on a grdctl-less image)" >&2
     fi
