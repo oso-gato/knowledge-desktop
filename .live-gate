@@ -126,7 +126,14 @@ FENCE_web="--security-opt label=disable --cap-add SETUID --cap-add SETGID --cap-
 HEALTH_web='kd-health'
 # self-diagnosing (H4): a RED carries its own evidence — boot markers, the service census, guacd's
 # loopback door, and the deep-liveness HTTP code with the service logs that explain a non-200.
-PROBE_web='kd-health && test $(runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select count(*) from guacamole_connection") = 3 || { echo =run-kd: ; ls -la /run/kd 2>&1 ; echo =web-users: ; runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select e.name from guacamole_user u join guacamole_entity e on u.entity_id=e.entity_id" 2>&1 ; echo =tiles: ; runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select connection_name from guacamole_connection" 2>&1 ; echo =tomcat-tail: ; tail -12 /run/kd/tomcat.log 2>&1 ; exit 1 ; }'
+# Connection census (WP-14): the standard roster-mixed fixture provisions 3 users (kadm+gw1+gw2)
+# → 3 DESKTOP tiles, PLUS the fleet SSH tiles from their grants (kadm→erebus+fedora-dev, gw1→erebus,
+# gw2 none) → 3 SSH tiles. The probe asserts the BREAKDOWN (3 desktop + 3 fleet tiles), proving
+# WP-14 actually wired the granted tiles — not a bare total a wrong-shaped row could still satisfy.
+# No SQL string literals / single quotes (the value is single-quote-delimited + bash-exec'd in the
+# candidate): the connection_name substrings "desktop" and "tile-" are non-overlapping, so grep -c
+# on the name list is an exact, quote-free census.
+PROBE_web='kd-health && names=$(runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select connection_name from guacamole_connection") && test $(printf "%s\n" "$names" | grep -c desktop) = 3 && test $(printf "%s\n" "$names" | grep -c tile-) = 3 || { echo =run-kd: ; ls -la /run/kd 2>&1 ; echo =web-users: ; runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select e.name from guacamole_user u join guacamole_entity e on u.entity_id=e.entity_id" 2>&1 ; echo =conns: ; runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select protocol,connection_name from guacamole_connection order by 1,2" 2>&1 ; echo =tomcat-tail: ; tail -12 /run/kd/tomcat.log 2>&1 ; exit 1 ; }'
 # First boot runs initdb + guac schema load + Tomcat webapp expansion (genuinely slow on the
 # shared-vCPU host): 30×6 = 180s budget, well past the ~60-90s real first boot (F2 — a slow first
 # boot must never read as unhealthy; the grd lesson: budget must exceed the real first boot).
