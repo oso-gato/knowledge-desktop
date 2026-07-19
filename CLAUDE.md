@@ -32,9 +32,9 @@ consulted in the fleet repos.
 
 ## Validation tiers (from DESIGN.md §7)
 
-- **Lineage 1 (xrdp)**: iterate Tier-1 IN-BOX (the dev box's nested engine builds AND runs it),
+- **Lineage 2 (xrdp)**: iterate Tier-1 IN-BOX (the dev box's nested engine builds AND runs it),
   then host-gate for the full probe catalog.
-- **Lineage 2 (grd)**: systemd-PID-1 — the nested engine CANNOT boot it. In-box = build + static
+- **Lineage 1 (grd)**: systemd-PID-1 — the nested engine CANNOT boot it. In-box = build + static
   assertions only; ALL runtime proof is host-gate. Do not burn iterations trying to run it in-box.
 - Spikes WP-04/WP-05 are GATE-KEEPERS: WP-11/WP-12 must not start before their GO/NO-GO is
   recorded on the PR. A NO-GO triggers the conditional forks in DESIGN.md §11 — surface, don't
