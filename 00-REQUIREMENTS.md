@@ -1,13 +1,12 @@
 # knowledge-desktop — FUNCTIONAL REQUIREMENTS (spec of record)
 
-> **v1.01 — founding requirements + host-class amendment (B4), owner-approved 2026-07-12.**
-> Companion to [`00-OBJECTIVES.md`](./00-OBJECTIVES.md) (the objective this requirement set
-> delivers). This document is the **measuring stick**: every design, build, validation, and ship
-> decision in this repo is graded against it. It changes ONLY with the owner's explicit approval —
-> never as part of a feature PR. (Separated from the founding single `REQUIREMENTS.md` on
-> 2026-07-14 — objective and functional requirements split into companion specs of record, **no
-> content change**; the `§N` section numbering is preserved across both files so every existing
-> cross-reference still resolves. §1 Objective now lives in `00-OBJECTIVES.md`; §2–§6 are here.)
+> **The spec of record — the current, owner-approved functional requirements.** Companion to
+> [`00-OBJECTIVES.md`](./00-OBJECTIVES.md) (the objective this requirement set delivers). This
+> document is the **measuring stick**: every design, build, validation, and ship decision in this
+> repo is graded against it. It states **WHAT must be observably true as it now stands** — not the
+> history of how it got here (that is [`DESIGN.md`](./DESIGN.md)); it changes only with the owner's
+> explicit confirmation, never as part of a feature PR. (§1 Objective lives in `00-OBJECTIVES.md`;
+> §2–§6 are here.)
 
 It states WHAT must be observably true, not HOW. It prescribes no build mechanism and fixes no
 port numbers, config keys, or file paths. A proper name appears here only where the name itself is
@@ -72,18 +71,18 @@ code and the repo's design documents) must TRACE to this document but never cons
 | FR | Requirement |
 |---|---|
 | A1 | The full desktop is usable from a **standard web browser over HTTPS, from anywhere, with zero client software** (including iOS/iPadOS). |
-| A2 | **Exactly one network endpoint is public: the browser door (A1)**, reachable over HTTPS from the public internet. Every other access path — **RDP (A6), VNC (A7), SSH terminal (A8)** — is reachable **only over the Tailscale tailnet**, never from the public internet. This holds **by construction, not by convention**. |
+| A2 | **Exactly one network endpoint is public: the browser door (A1)**, reachable over HTTPS from the public internet. Every other access path — **RDP (A6), VNC (A7 — Lineage 2 only), SSH terminal (A8)** — is reachable **only over the Tailscale tailnet**, never from the public internet. This holds **by construction, not by convention**. |
 | A3 | The public door requires, **for every user without exception — the admin and every worker alike — a strong per-user credential PLUS a second factor** that works with standard authenticator apps, with **self-service enrollment at first login**. No user, role, or configuration setting exempts anyone from the second factor on the public door. |
 | A4 | The public door **locks out brute force automatically** (repeated failed logins ⇒ temporary source ban). |
 | A5 | The public door is **encrypted in transit**; no credential ever crosses the network in the clear. |
 | A6 | The desktop is also reachable **natively via standard RDP from the Tailscale tailnet** (interoperable with stock Windows/macOS/FreeRDP clients), never from the public internet. Tailnet membership is sufficient authentication (no second factor); the door still establishes **which** user is connecting (A12) and attaches only to that user's own running session (A11, A9). |
-| A7 | The desktop is reachable natively via **standard VNC** (interoperable with stock VNC clients) — **over the Tailscale tailnet only**, never from the public internet. VNC is a **first-class user access path to the user's own desktop**: it attaches to that user's single running session (A11), never forking a second session. It is **not a mirror and not a supervisory channel** — no operator, admin, or other user may observe any user's session through it. The door establishes **which** user is connecting (A12, using the A13-derived credential) and attaches only to that user's own session. Tailnet membership is sufficient authentication — no second factor. Required on both lineages. |
+| A7 | The desktop is reachable natively via **standard VNC** (interoperable with stock VNC clients) — **over the Tailscale tailnet only**, never from the public internet. VNC is a **first-class user access path to the user's own desktop**: it attaches to that user's single running session (A11), never forking a second session. It is **not a mirror and not a supervisory channel** — no operator, admin, or other user may observe any user's session through it. The door establishes **which** user is connecting (A12, using the A13-derived credential) and attaches only to that user's own session. Tailnet membership is sufficient authentication — no second factor. **Required on Lineage 2 (XRDP/X11) only.** Lineage 1 (GRD/Wayland/GNOME) does **not** provide native VNC — GNOME's headless GRD serves VNC only over a non-standard security type that no stock VNC client speaks, and stock-package provenance forbids a custom GRD; on Lineage 1, native desktop access is **RDP (A6) + the web door (A1)**. See the §1 two-lineage mandate (and DESIGN for how this was established). |
 | A8 | **SSH terminal access over the Tailscale tailnet only** — never from the public internet: key-only **SSH**, plus **Mosh** for roaming resilience (survives changes of network address and device sleep). Tailnet membership is sufficient authentication (no second factor); the door still establishes **which** user is connecting (A12). Every terminal login by a user lands in **that user's own persistent tmux session** — one per user, shared across that user's own devices and **never** between users (A9, D2, D3) — which **follows the most recently active device** and remains legible at every screen size it is viewed from. |
 | A9 | **One login, one desktop (SSO):** authenticating at any door lands the user on **their own** session without re-authenticating to a second layer; no user can reach another user's session. |
 | A10 | The browser door hosts **per-user-granted SSH terminal tiles to fleet endpoints — hosts and containers alike (§2)** — over the tailnet, including at minimum **Erebus** (the host) and the **fedora-dev** container. Grants are per-user, exact-match, fail-closed, and **revocation actually revokes**; an ungranted user sees nothing. The granted endpoint set is **dynamic** — adding an endpoint is a grant change, never a requirements change. |
-| A11 | **Same-session invariant.** Three first-class desktop access paths — web (A1), RDP (A6) and VNC (A7) — **all attach to the SAME running session.** For a given user there is exactly **one** desktop session. Every path that user opens — in any combination, concurrently or in sequence, from any device — attaches to that one session, showing the same running applications and the same live screen. **No access path may create, fork, or serve a second session for that user**, and closing or losing one path never ends the session (C1). |
+| A11 | **Same-session invariant.** The first-class desktop access paths — web (A1), RDP (A6), and — on Lineage 2 — VNC (A7) — **all attach to the SAME running session.** For a given user there is exactly **one** desktop session. Every path that user opens — in any combination, concurrently or in sequence, from any device — attaches to that one session, showing the same running applications and the same live screen. **No access path may create, fork, or serve a second session for that user**, and closing or losing one path never ends the session (C1). |
 | A12 | **Every door resolves the user before it serves anything.** On every access path — public and private alike — the connection is resolved to exactly **one** defined user before any pixels, shell, or session are served, and it attaches only to **that** user's own session and home (A9, D2). A connection that cannot be resolved to exactly one defined user is **refused (fail-closed)**. On the private doors (RDP, VNC, SSH), **tailnet membership is sufficient authentication — no second factor is required** (the A3 second factor is a public-door property only); tailnet membership discharges the second factor, it does **not** identify the user and never substitutes for the per-user identity each private door must still establish (RDP/VNC by the user's own per-user credential, SSH by the user's own key per A8). **No tailnet member may reach a session or home that is not their own** (D2, D3). |
-| A13 | **Credential format (owner-elected).** Each user's password is a **Diceware-style phrase of the fixed shape `xxx-xxxx-xxxx`** — a 3-character word, a 4-character word, and a 4-character word, dash-separated (13 characters). It is the **one credential** that user presents at every door (with the A3 second factor added on the public door only). Where a door's protocol cannot carry the full credential — **VNC accepts at most 8 password characters** — that door takes **exactly the first 8 characters of the same credential (`xxx-xxxx`)**: a truncation rule, not a second credential — nothing separate to issue, rotate, or forget. The security consequence of the truncation is disclosed in E6. |
+| A13 | **Credential format (owner-elected).** Each user's password is a **Diceware-style phrase of the fixed shape `xxx-xxxx-xxxx`** — a 3-character word, a 4-character word, and a 4-character word, dash-separated (13 characters). It is the **one credential** that user presents at every door (with the A3 second factor added on the public door only). Where a door's protocol cannot carry the full credential — **Lineage 2's VNC door accepts at most 8 password characters** — that door takes **exactly the first 8 characters of the same credential (`xxx-xxxx`)**: a truncation rule, not a second credential — nothing separate to issue, rotate, or forget. The security consequence of the truncation is disclosed in E6. |
 
 ### B. Desktop & workloads
 
@@ -101,7 +100,7 @@ code and the repo's design documents) must TRACE to this document but never cons
 | C1 | A session **survives disconnect indefinitely** — apps keep running unattended. |
 | C2 | **Cross-device resume:** disconnect on device A, reconnect on device B (different network address, different screen size, different access path) ⇒ the **same** session, every application still running and in the same state, and the desktop sized to device B per **C4**. |
 | C3 | Sessions come up **without any server-side manual action** — a freshly booted box serves every access path unaided. |
-| C4 | **Last display wins — desktop geometry.** A desktop session's geometry is always set by its **governing display**: the most recently active of the displays currently attached to that session (the last display to view, click, move the pointer, type on, or change its viewport). Observably, the desktop's drawing area matches the governing display's viewport — the whole desktop is visible, fills that viewport, and is **not** letterboxed, cropped, panned, scrollable, or left at any other display's size. When a different attached display becomes the most recently active, the desktop follows and scales to it **within 5 seconds**, without restarting the session and without disturbing any running application. When the governing display detaches, the next-most-recently-active still-attached display governs; when the last display detaches the session keeps running (C1) and adopts the geometry of the next display that attaches. This holds on **every desktop access path — web, RDP and VNC, including when two or more are attached to the one session at once — and identically on both lineages (X11 and Wayland).** Stated as an observable outcome, not a mechanism. |
+| C4 | **Last display wins — desktop geometry.** A desktop session's geometry is always set by its **governing display**: the most recently active of the displays currently attached to that session (the last display to view, click, move the pointer, type on, or change its viewport). Observably, the desktop's drawing area matches the governing display's viewport — the whole desktop is visible, fills that viewport, and is **not** letterboxed, cropped, panned, scrollable, or left at any other display's size. When a different attached display becomes the most recently active, the desktop follows and scales to it **within 5 seconds**, without restarting the session and without disturbing any running application. When the governing display detaches, the next-most-recently-active still-attached display governs; when the last display detaches the session keeps running (C1) and adopts the geometry of the next display that attaches. This holds on **every desktop access path that lineage serves — web, RDP, and (Lineage 2) VNC, including when two or more are attached to the one session at once — and identically on both lineages (Lineage 1 Wayland, Lineage 2 X11).** Stated as an observable outcome, not a mechanism. |
 
 ### D. Multi-user
 
@@ -166,11 +165,19 @@ code and the repo's design documents) must TRACE to this document but never cons
 
 ## 5. Approved lineage deltas
 
-**None.** Both lineages must satisfy §3 in full; no per-lineage exception is approved and this
-document grants none. The only permitted differences between the two lineages are internal
-mechanism and the **owner-elected desktop environment** (§1: XFCE on lineage 1, GNOME on
-lineage 2) — every requirement, every door, and every behaviour in this document holds
-identically on both, on every access path (A11).
+**Two, both owner-elected.** Beyond these, both lineages must satisfy §3 in full; no other
+per-lineage exception is approved and this document grants none. The permitted differences between
+the two lineages are internal mechanism plus:
+
+1. **The desktop environment** (§1): **GNOME on Lineage 1** (GRD/Wayland), **XFCE on Lineage 2**
+   (XRDP/X11).
+2. **The native-VNC door (A7): Lineage 2 only.** Lineage 1 (GRD) does not serve native VNC —
+   GNOME's headless GRD offers VNC only over a non-standard security type that no stock client
+   speaks and stock provenance forbids a custom GRD; Lineage 1's native access is web (A1) + RDP
+   (A6). See the §1 mandate (DESIGN records how this was established).
+
+Every *other* requirement, door, and behaviour in this document holds **identically on both**, on
+every access path each lineage serves (A11).
 
 ## 6. Acceptance bar — "shipped" means
 

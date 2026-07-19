@@ -1,13 +1,11 @@
 # knowledge-desktop — OBJECTIVE (spec of record)
 
-> **Owner-approved 2026-07-12 (v1.01, incl. the host-class amendment B4).** This is the durable,
-> versioned objective this repo builds to — the ground truth every design, build, validation, and
-> ship decision re-grounds on. The **functional requirements** live in the companion
-> [`00-REQUIREMENTS.md`](./00-REQUIREMENTS.md). This objective is locked; amendment is a new owner
-> confirmation, never a silent edit. (Separated from the founding single `REQUIREMENTS.md` on
-> 2026-07-14 — objective and functional requirements split into companion specs of record, **no
-> content change**; the `§N` section numbering is preserved across both files so every existing
-> cross-reference still resolves.)
+> **The spec of record — the current, owner-approved objective this repo builds to.** The ground
+> truth every design, build, validation, and ship decision re-grounds on. The **functional
+> requirements** live in the companion [`00-REQUIREMENTS.md`](./00-REQUIREMENTS.md). This states the
+> objective **as it now stands**; it changes only with the owner's explicit confirmation, never a
+> silent edit. The road travelled — options weighed, paths taken and not taken — lives in
+> [`DESIGN.md`](./DESIGN.md), not here.
 
 ## 1. Objective
 
@@ -16,8 +14,8 @@ headless internet host — **with or without a GPU (§2 host classes, B4)** — 
 anywhere.
 
 **The access model.** The desktop is reached through three first-class access paths — a **web
-browser door**, **RDP**, and **VNC** — and **all three attach to the user's one running desktop
-session**; no path ever forks a second session. Exactly **one** of these is public: the **web
+browser door**, **RDP**, and (on the compatibility lineage) **VNC** — and **all of them attach to
+the user's one running desktop session**; no path ever forks a second session. Exactly **one** of these is public: the **web
 browser door, over HTTPS on the public IP**, usable from any device in any location with zero
 client software. Every other door — RDP, VNC, and SSH terminal access — is reachable **only over
 the owner's private Tailscale tailnet**, never from the public internet. The desktop **follows the
@@ -46,19 +44,38 @@ public door (the web door), with every other door reachable only over the Tailsc
 can't read each other), and **self-maintaining** (patches itself, heals itself, a failed upgrade
 rolls back).
 
-**Mandate — two lineages.** A **lineage** is a complete, independently shippable implementation of
-this entire document: its own image, its own build, its own validation, deployable on its own. This
-repo ships **two**, differing in exactly one thing — the remote-desktop stack each is built on, and
-the desktop environment elected with it:
+**Mandate — two lineages: the forward path and a compatibility hedge.** A **lineage** is a complete,
+independently shippable implementation of this entire document — its own image, its own build, its
+own validation, deployable on its own. This repo ships **two**. They are not two interchangeable
+options; they are a **primary and a fallback**, differing in the remote-desktop stack each is built
+on and the desktop session and environment elected with it:
 
-- **LINEAGE 1 — XRDP, serving an X11 desktop session, with XFCE as the desktop environment.**
-- **LINEAGE 2 — GRD (GNOME Remote Desktop), serving a Wayland desktop session, with GNOME as the
-  desktop environment.**
+- **LINEAGE 1 — GRD (GNOME Remote Desktop) on a Wayland session, GNOME desktop — the primary, and
+  the way forward.** Wayland is the modern display architecture and the one the whole Linux desktop
+  is now developed on: Xorg is frozen in maintenance and its session is being retired across the
+  ecosystem, while Wayland composites cleanly for GPU-accelerated rendering, fractional and mixed-DPI
+  scaling, and per-display geometry (B4, C4), and it **isolates every application by construction**
+  rather than leaving the X11 free-for-all in which any client can silently read another's keystrokes
+  and screen. GRD is GNOME's own, actively-maintained, RDP-first remote-desktop server. This is the
+  lineage the product is built around, and where the desktop is going.
+- **LINEAGE 2 — XRDP on an X11 session, XFCE desktop — the compatibility hedge, and the fallback.**
+  The X11/xrdp stack is mature and battle-tested, and it buys the one thing the forward path cannot
+  yet give: **complete, standards-compliant native VNC**, whose door speaks the plain VNC that every
+  stock client on every platform understands. It exists so the product is never hostage to the
+  Wayland ecosystem's rough edges — where the primary lacks something today, or should GRD or Wayland
+  ever regress, the whole product still ships on a proven foundation.
 
-Both lineages ship. Each satisfies **every requirement in §3 in full, on its own** — every door,
-every FR, no exemptions. **The lineages are functionally equivalent:** the same three doors, the
-same one-session invariant, the same toolset (B2), the same geometry behaviour (C4), the same
-isolation, the same fleet tiles — every requirement in this document holds identically on both.
-The **sole owner-elected, user-visible difference is the desktop environment itself** (XFCE vs
-GNOME); any *other* user-visible difference between the two lineages is a defect. Each lineage is
-graded independently against the §6 bar; §5 records that no lineage deltas are approved.
+Both lineages ship, and **each satisfies every requirement in §3 in full, on its own — with exactly
+one owner-elected door difference.** **Lineage 1 (GRD)** serves **web, RDP, and SSH — but not native
+VNC.** **Lineage 2 (XRDP)** serves all four doors: **web, RDP, VNC, and SSH.** This is the honest
+expression of the forward-path-versus-hedge split, not a defect and not a mere preference: GNOME's
+headless GRD offers VNC only over a non-standard "anonymous-TLS" security type that **no stock VNC
+client on macOS, Windows, or iPadOS speaks**, and stock-package provenance forbids rebuilding GRD to
+change it — so on the primary, native VNC is dropped in favour of **RDP**,
+which GNOME itself now prefers and which has first-class stock clients on every device (Windows
+`mstsc`, Microsoft Remote Desktop on macOS and iPad), alongside the public web door. **A user who
+specifically needs a native VNC client runs Lineage 2.** The two owner-elected, user-visible
+differences between the lineages are therefore the **desktop environment** (GNOME vs XFCE) and the
+**native-VNC door** (Lineage 2 only); any *other* user-visible difference remains a defect. Each
+lineage is graded independently against the §6 bar; §5 records that this door difference is the only
+approved lineage delta.
