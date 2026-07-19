@@ -4,6 +4,10 @@
 # stack is never healthy; a slow first boot reads as unhealthy only until init completes
 # (HealthStartPeriod covers the window); it asserts REAL state, never a cached flag alone.
 #
+# NOTE (pre-flip labels): this file ships to the XRDP lineage; the "L1"/"L2" below PREDATE the
+# lineage-number flip — here "L1" = XRDP (now Lineage 2) and "L2" = GRD (now Lineage 1, the primary).
+# Behaviour is correct (this lineage serves VNC); only the numeric labels are stale.
+#
 # The UNCONDITIONAL L1 health tier (WP-02 strict E2 — every boot is provisioned; the skeleton-mode
 # skip is RETIRED with E6 R18):
 #   1. init completed (the entrypoint's /run/kd/boot-ok, removed on TERM)
