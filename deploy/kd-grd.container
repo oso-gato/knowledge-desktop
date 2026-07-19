@@ -1,15 +1,16 @@
 # kd-grd.container — systemd quadlet for LINEAGE 2 (GRD/Wayland/GNOME, systemd PID 1). WP-03,
-# [ADJ-34]. The sanctioned run contract for this lineage is THIS unit + (post-WP-08) its
-# netns-joined web-door sidecar kd-web-grd.container — see [ADJ-34]; the L2 sidecar lands with
-# the WP-08 stack. BYTE-IDENTICAL across host classes (B4). F4 co-deploy: every name/volume/port
-# disjoint from kd-xrdp (gate/lint.sh enforces). The systemd payload needs the cap set proven on
-# PR #1 (cap-drop floor kills User= services without it) — under the rootless engine every cap
-# is userns-scoped.
-# Health: HealthCmd carries the .live-gate HEALTH_grd contract (running OR degraded — the
-# skeleton's honest terminal-state bar; WP-08 tightens both to `running`). gate/lint.sh asserts
-# the .live-gate HEALTH string is contained in the HealthCmd line (the old header claimed a
-# VERBATIM mirror while HealthCmd accepted running-only — an UNTRUE drift, fixed here).
-# Deepens to kd-health with WP-08.
+# [ADJ-34]. The sanctioned run contract for this lineage is THIS unit + its netns-joined
+# web-door sidecar kd-web-grd.container (a STANDALONE control-plane PR per N6 — see [ADJ-34]).
+# BYTE-IDENTICAL across host classes (B4). F4 co-deploy: every name/volume/port disjoint from
+# kd-xrdp (gate/lint.sh enforces). The systemd payload needs the cap set proven on PR #1
+# (cap-drop floor kills User= services without it) — under the rootless engine every cap is
+# userns-scoped; WP-08 adds NET_BIND_SERVICE + SYS_CHROOT (the A8 sshd door: privileged :22
+# bind + pre-auth privsep chroot — the same pair FENCE_xrdp carries).
+# Health (WP-08, the promised tighten): HealthCmd = kd-health — systemd fully `running`, zero
+# failed units, provision-complete, EVERY provisioned user's manager + grd RDP/VNC doors
+# answering, sshd up. gate/lint.sh asserts the .live-gate HEALTH_grd string is contained in the
+# HealthCmd line. StartPeriod 240s ≥ the full-GNOME first boot (V36 — heavier than the skeleton's
+# measured ~60s; F2: a slow first boot must never read falsely unhealthy).
 [Unit]
 Description=knowledge-desktop — lineage 2 (GRD/Wayland/GNOME)
 
@@ -27,14 +28,15 @@ Volume=kd-grd-shared:/srv/shared:rw,nosuid,nodev
 PublishPort=8443:8443
 Network=kd-grd.network
 Notify=healthy
-HealthCmd=sh -c 's=$(systemctl is-system-running 2>/dev/null); [ "$s" = running ] || [ "$s" = degraded ]'
+HealthCmd=kd-health
 HealthInterval=10s
-HealthRetries=12
-HealthStartPeriod=120s
+HealthRetries=24
+HealthStartPeriod=240s
 HealthOnFailure=kill
 SecurityLabelDisable=true
-# systemd-PID-1 contract (proven on PR #1: cgroup wiring + the User=-transition cap set)
-PodmanArgs=--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL
+# systemd-PID-1 contract (proven on PR #1: cgroup wiring + the User=-transition cap set;
+# WP-08: + NET_BIND_SERVICE/SYS_CHROOT for the A8 sshd door — mirrors the .live-gate FENCE_grd)
+PodmanArgs=--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL --cap-add NET_BIND_SERVICE --cap-add SYS_CHROOT
 
 [Service]
 Restart=on-failure

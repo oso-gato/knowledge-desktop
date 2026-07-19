@@ -2,11 +2,16 @@
 # [ADJ-13]: FailureAction=exit-force makes a required-secret failure exit the CONTAINER
 # nonzero within seconds — the E2 fail-fast observable the gate asserts (challenge US-#7).
 #
-# SHIPPED-NOT-ENABLED by WP-06 (honest wiring status, N4): enabling this before the gate
-# harness (WP-02) supplies roster fixtures would fail every skeleton boot. WP-08 enables it
-# (multi-user.target wants) as part of the L2 walking skeleton, when the boot chain lands.
+# ENABLED by WP-08 (multi-user.target.wants symlink at build) — the L2 boot chain is live:
+# strict E2, a rosterless boot kills the container (V19). BOOT ORDER (encoded as unit deps —
+# L2 has no bash entrypoint to serialize it, unlike L1): pass 2 of the provisioner calls
+# `loginctl enable-linger` per user (kd-session-enable), which needs the system bus AND logind
+# reachable — so this unit Wants+After both. Ordering only: their own failure does not block
+# provisioning (pass-2 session enablement is non-fatal; credentials land in pass 1 regardless).
 [Unit]
 Description=kd-provision — roster-driven user/credential provisioning (sole roster parser)
+Wants=dbus-broker.service systemd-logind.service
+After=dbus-broker.service systemd-logind.service
 Before=multi-user.target
 ConditionPathExists=!/run/kd/provision-complete
 FailureAction=exit-force
@@ -15,5 +20,14 @@ FailureAction=exit-force
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/libexec/kd/kd-provision
-StandardOutput=journal
-StandardError=journal
+# journal+console so kd-provision's messages (incl. a die(4) "admin apply failed (<Exception>)"
+# abort) reach the CONTAINER CONSOLE → `podman logs` → the live-gate's boot-log tail. With
+# journal-only, an early exit-force before the health probe left the gate verdict with an EMPTY
+# boot-log tail and no cause (#23 @5f8de43 exit=4) — this makes any pre-health failure self-diagnosing (N5).
+StandardOutput=journal+console
+StandardError=journal+console
+
+# WP-08: the [Install] section `systemctl enable` needs (without it the build's enable is a
+# silent no-op — caught by the build assert: no multi-user.target.wants symlink ever appeared).
+[Install]
+WantedBy=multi-user.target

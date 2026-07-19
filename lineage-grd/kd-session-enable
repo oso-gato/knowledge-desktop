@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# kd-session-enable (LINEAGE 1 — GRD/Wayland/GNOME; DESIGN §2, WP-08) — kd-provision's pass-2 hook:
+# bring up the user's ONE headless GNOME session + grd's RDP door (C3: sessions come up at boot
+# unaided; A11: one session, every door attaches). Interface mirrors Lineage 2: `<user>`, phrase on
+# STDIN — consumed and DISCARDED here (the grd credentials were already installed by kd-cred in
+# pass 1; ignoring the fd entirely would risk a broken-pipe on kd-provision's write). Idempotent:
+# every step is enable/--now/disable or a guarded create, so a re-apply converges (D5 reinstatement).
+#
+# RDP-NATIVE, NO NATIVE VNC (DESIGN §2 note (j)): this primary lineage serves RDP + web, not native
+# VNC — grd's headless VNC speaks only a stock-incompatible anon-TLS type, so its VNC backend is
+# explicitly DISABLED below (which also removes the type-18 core-dump that took the RDP door down).
+# Pass-2 split (WP-08): everything here needs the user's LIVE session bus (dconf writes,
+# systemctl --user), which exists only after linger starts user@$uid — exactly why kd-cred (pass 1)
+# is credential-only. Per-user FIXED RDP port, uid-derived (3389+uid-2000, [ADJ-34]) — the web tile
+# uses the same arithmetic so guacd→RDP agrees with the listener by construction, no runtime lookup.
+set -euo pipefail
+
+user="${1:?usage: kd-session-enable <user> (phrase on stdin)}"
+uid="$(id -u "$user")" || { echo "kd-session-enable: no such user (value-free)" >&2; exit 1; }
+IFS= read -r _ || true                      # consume stdin; creds already installed (pass 1)
+
+off=$(( uid - 2000 )); rdp_port=$(( 3389 + off ))   # RDP only; native VNC dropped on this lineage
+
+# C3: the lingering per-user systemd --user manager — the session's foundation
+loginctl enable-linger "$user"
+# wait for the user manager's session bus (user@$uid brings up /run/user/$uid + dbus.socket)
+for _ in $(seq 1 60); do [ -S "/run/user/${uid}/bus" ] && break; sleep 0.5; done
+[ -S "/run/user/${uid}/bus" ] || { echo "kd-session-enable: user bus never appeared for uid ${uid}" >&2; exit 1; }
+
+run_user(){ # run AS the user against their live session bus; non-interactive (no tmux attach)
+    runuser -l "$user" -c "export XDG_RUNTIME_DIR=/run/user/${uid} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus; $*"
+}
+
+# pipewire + wireplumber FIRST — grd's screencast dies (0x904) without a session manager.
+# ONLY these two units (matching grd's own After=/Wants= graph in grd-headless-override.conf):
+# NOT pipewire-pulse.socket — that is the PulseAudio-compat shim from the separate `pipewire-pulse`
+# subpackage, which weak-deps-off does NOT install (gnome-remote-desktop hard-pulls only `pipewire`),
+# is audio-only (screencast uses pipewire directly), and out of the WP-08 skeleton scope. Naming a
+# non-existent unit made `systemctl enable` (validated atomically) fail rc=1 under set -e, aborting
+# the whole prestart before any door bound — every RDP/VNC port stayed shut (#23 host-gate RED).
+run_user 'systemctl --user enable --now pipewire.socket wireplumber.service'
+
+# per-user RDP TLS cert, once (grd RDP will NOT bind without cert+key — enforce the ordering:
+# tls + creds + port THEN enable, or the listener never appears and the gate sees no door)
+run_user 'd="$HOME/.local/share/gnome-remote-desktop"; mkdir -p "$d"; [ -f "$d/tls.crt" ] || openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -out "$d/tls.crt" -keyout "$d/tls.key"; chmod 600 "$d/tls.key"; [ -s "$d/tls.crt" ] && [ -s "$d/tls.key" ] || { echo "kd-session-enable: TLS cert/key generation failed (RDP will not bind)" >&2; exit 1; }'
+
+# grd headless RDP: tls → fixed port → enable LAST. Port negotiation is OPT-IN in grd-50 (the only
+# subcommand is `enable-port-negotiation` — "if the set port is unavailable, listen to the next"),
+# so NOT enabling it IS the fixed-port behaviour (A2/[ADJ-34]). The removed `disable-port-negotiation`
+# was not a real grdctl verb. `enable` configures the RUNNING daemon (grd auto-started at linger), so
+# it must come after set-port/tls; the later `restart` makes the daemon re-read + bind the fixed port.
+run_user 'grdctl --headless rdp set-tls-cert "$HOME/.local/share/gnome-remote-desktop/tls.crt"'
+run_user 'grdctl --headless rdp set-tls-key  "$HOME/.local/share/gnome-remote-desktop/tls.key"'
+run_user "grdctl --headless rdp set-port ${rdp_port}"
+run_user "grdctl --headless rdp enable"
+# grd headless VNC: DISABLED (DESIGN §2 note (j)). grd's headless VNC offers only Fedora's
+# non-standard anon-TLS (RFB type 18) which no stock client speaks — it cannot satisfy A7 — AND a
+# stray connection to it can core-dump the shared daemon, taking the RDP door down too. Explicitly
+# disable it so the backend never binds (idempotent; safe if already off).
+run_user "grdctl --headless vnc disable"
+
+# compositor FIRST → wait for mutter to export its RemoteDesktop D-Bus API → then (re)start grd so
+# it reads the store just configured. Three deliberate changes vs the old start-based sequence:
+#   - `restart` (not `start`): grd is no longer --global enabled (see Containerfile), so a plain
+#     start could race; restart cleanly (re)starts it CONFIG-FIRST, forcing a fresh store read
+#     regardless of whether grd live-reloads (settles the grdctl writer/reader-store question).
+#   - the gdbus wait closes the cold-llvmpipe race: mutter needs seconds to export
+#     org.gnome.Mutter.RemoteDesktop, and a grd that starts before it dies "name has no owner"/0x904.
+#   - the old `add-wants default.target …` is DROPPED: it persisted the unconfigured-auto-start race
+#     onto the production home volume; kd-provision re-runs on every boot, so the explicit restart
+#     already covers reboots (and grd's own Restart=on-failure self-heals a late compositor).
+run_user 'systemctl --user enable --now gnome-shell-headless.service'
+run_user 'for i in $(seq 1 60); do gdbus introspect --session --dest org.gnome.Mutter.RemoteDesktop --object-path /org/gnome/Mutter/RemoteDesktop >/dev/null 2>&1 && break; sleep 0.5; done'
+run_user 'systemctl --user restart gnome-remote-desktop-headless.service'
+
+echo "kd-session-enable: ${user} session up (rdp :${rdp_port}; native VNC disabled — RDP+web lineage)"
