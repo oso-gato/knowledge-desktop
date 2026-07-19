@@ -46,3 +46,47 @@ FreeRDP 3.14.x. Positive-path proof (vendored 3.14 + guacd builds the RDP plugin
 
 **BOTTOM LINE (V4 closed for the decision):** the web door is feasible — vendor FreeRDP 3.14.0 at a
 private prefix + build guacd 1.6.0 against it (glibc -Wno-error/patch). DESIGN [ADJ-1/2/3] stand.
+
+## V1 — grd accepts a concurrent second RDP connection (WP-04, host-gate, 2026-07-19)
+
+DESIGN line 210 / [ADJ-1] line 55: L1's web-desktop transport is RDP (guacd RDP → grd), **contingent
+on V1** — does grd's headless RDP accept an authenticated login and a concurrent second connection, or
+does it single-session-refuse like its VNC ([ADJ-25])? A RED reopens the L1 gateway (DESIGN §10 fork).
+
+**Method.** A transient `grdspike` `.live-gate` target reused the production grd image (`CFILE_grd`,
+zero shipped surface) with a throwaway RDP client (`freerdp` 3.29 + `Xvfb`) BAKED at build time — the
+host-gate fence has **no runtime egress** (probe-time `dnf` cannot resolve Fedora mirrors), a reusable
+fact for future host-gate probes. The probe drove `xfreerdp` attaches to `grd` on `kadm:3389`
+(NLA, `/cert:ignore`). Nine iterations (draft PR #27); the target + bake block were removed before merge.
+
+**DECISION-CRITICAL RESULT = V1 GO (transport viable), with a session-stability risk deferred to the
+real client.**
+- **grd RDP login WORKS** (`nla-exit=0`; a session authenticates and loads real channels — `rdpgfx`,
+  `disp`, `rdpsnd`, `ainput`). This also closes WP-08's deferred RDP-login round-trip (the credential
+  path — `kd-cred`'s `grdctl rdp set-credentials <user>` + stdin phrase — authenticates; V17 fine).
+- **grd ACCEPTS a concurrent second connection** — two staggered attaches BOTH reached channel-load
+  (`A-markers>0 && B-markers>0`). grd does **not** single-session-refuse (DESIGN's "sessions GList, no
+  refusal" hypothesis CONFIRMED). So L1 web=RDP has a stock path → **NOT a §10 fork**.
+- **BUT sessions do not HOLD under this test client**: shortly after channel-load grd's per-user RDP
+  daemon goes down (`port-after=down`; client dies SIGPIPE/`Connection reset by peer`), then the next
+  connect is `Connection refused` while systemd restarts it. The trigger chain is entangled with
+  **three artifacts of THIS test setup, none shared by production**: (a) Fedora FreeRDP **3.29**'s
+  experimental `WITH_GFX_AV1=ON` build ("might crash the application") on BOTH endpoints; (b) the
+  client's **cliprdr FUSE mount** denied by the fence (`fusermount3: mount failed: Operation not
+  permitted`); (c) software rendering / Xvfb. Production L1 uses guacd's vendored **FreeRDP 3.14**
+  (no AV1, no client-side cliprdr-FUSE, buffer rendering) — a DIFFERENT client.
+
+**Faithful limit.** A stock-client stability + concurrency proof needs the REAL guacd client via a
+COJOIN web+grd co-boot — the fedora-bootstrap gate-harness capability (control-plane, out of the
+workload's scope) that WP-11-L2 already defers its paint/marker-a11 proof to. `xfreerdp` 3.29 cannot
+stand in for guacd 3.14 here; more iterations would not reach the production answer.
+
+**Design inputs recorded for WP-11-L1 (do NOT re-litigate V1):**
+1. The per-user guac **RDP connection** should pin **conservative params** — disable GFX/AV1
+   (`enable-gfx`/RemoteFX off) and clipboard/drive redirection — to avoid the observed instability
+   path; validate the exact param set when the real client runs.
+2. Session **stability + true concurrency** (A11) get their faithful proof with the guacd client at
+   the **COJOIN tier** (same deferral as WP-11-L2), NOT from this xfreerdp spike.
+3. RISK carried forward (top item for the COJOIN proof): if grd's RDP daemon crashes server-side even
+   with guacd 3.14 / a stock client (mstsc), L1's primary door needs a mitigation (a grd-side codec/env
+   pin, provenance-clean) — surface then, with evidence, if it reproduces with the real client.
