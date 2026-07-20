@@ -1,0 +1,18 @@
+# KD geometry-governor (WP-12, C4) — the L1 "last display wins" component. A per-user systemd --user
+# unit, --global enabled at linger like gnome-shell-headless, so it comes up unaided (C3) in every
+# user's headless GNOME session and mirrors concurrent displays onto the governing one via Mutter
+# ApplyMonitorsConfig (V2-proven). Restarts on failure; needs the compositor's DisplayConfig.
+[Unit]
+Description=KD geometry governor (C4 last-display-wins)
+After=gnome-shell-headless.service
+Wants=gnome-shell-headless.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/kd/geometry-governor
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target
