@@ -160,6 +160,9 @@ FENCE_xrdpgeom="--security-opt label=disable --cap-add SETUID --cap-add SETGID -
 MEMORY_xrdpgeom="4g"
 PIDS_xrdpgeom="2048"
 HEALTH_xrdpgeom='kd-health'
-PROBE_xrdpgeom='kd-health && XL=$(pgrep -u kadm -a Xorg | head -1) && D=$(echo "$XL" | grep -oE ":[0-9]+" | head -1) && XA=$(echo "$XL" | grep -oE "[-]auth [^ ]+" | head -1 | cut -d" " -f2) && test -n "$D" && runuser -u kadm -- env DISPLAY=$D XAUTHORITY=$XA xrandr --fb 1234x789 >/dev/null 2>&1 ; sleep 2 ; CUR=$(runuser -u kadm -- env DISPLAY=$D XAUTHORITY=$XA xrandr 2>/dev/null | grep -oE "current [0-9]+ x [0-9]+" | grep -oE "[0-9]+ x [0-9]+" | tr -d " ") ; [ "$CUR" = "1234x789" ] && echo "V3-GO xorgxrdp accepted arbitrary screen 1234x789 disp=$D" || { echo "V3-NOGO current=$CUR disp=$D xa=$XA" ; echo =xrandr= ; runuser -u kadm -- env DISPLAY=$D XAUTHORITY=$XA xrandr 2>&1 | head -20 ; echo =xorg= ; pgrep -u kadm -a Xorg 2>&1 ; echo =sockets= ; ls -la /tmp/.X11-unix/ 2>&1 ; echo =runkd= ; ls -la /run/kd 2>&1 ; exit 1 ; }'
+# The gate surfaces the CANDIDATE (PID-1) stdout on RED, not the probe's — so the decisive line is
+# written to /proc/1/fd/1 (compressed to ONE line, xrandr dump tr-joined with ~) to survive the tail.
+# Exit code carries GO/NO-GO. before/after/fb-rc distinguish a real NO-GO from a measurement artifact.
+PROBE_xrdpgeom='kd-health || { echo V3-HEALTH-FAIL > /proc/1/fd/1 ; exit 1 ; } ; XL=$(pgrep -u kadm -a Xorg | head -1) ; D=$(echo "$XL" | grep -oE ":[0-9]+" | head -1) ; XA=$(echo "$XL" | grep -oE "[-]auth [^ ]+" | head -1 | cut -d" " -f2) ; SZ(){ runuser -u kadm -- env DISPLAY=$D XAUTHORITY=$XA xrandr 2>/dev/null | grep -oE "current [0-9]+ x [0-9]+" | grep -oE "[0-9]+ x [0-9]+" | tr -d " " ; } ; B4=$(SZ) ; runuser -u kadm -- env DISPLAY=$D XAUTHORITY=$XA xrandr --fb 1234x789 >/dev/null 2>&1 ; RC=$? ; sleep 2 ; AF=$(SZ) ; DUMP=$(runuser -u kadm -- env DISPLAY=$D XAUTHORITY=$XA xrandr 2>&1 | tr "\n" "~") ; echo "V3-RESULT disp=$D fbrc=$RC before=$B4 after=$AF want=1234x789 :: $DUMP" > /proc/1/fd/1 ; [ "$AF" = "1234x789" ] && exit 0 || exit 1'
 HEALTH_TRIES_xrdpgeom="30"
 HEALTH_SLEEP_xrdpgeom="6"
