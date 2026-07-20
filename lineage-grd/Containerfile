@@ -197,12 +197,13 @@ COPY lineage-grd/kd-session-enable  /usr/libexec/kd/kd-session-enable
 COPY lineage-grd/kd-health          /usr/local/bin/kd-health
 COPY shared/kd-agent-env            /usr/libexec/kd/kd-agent-env
 COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
-# WP-12 (C4): the geometry-governor (python3-gi; needs python3-gobject — a permanent dep now)
+# WP-12 (C4): the geometry-governor + the kd-geometry oracle (both python3-gi; python3-gobject dep)
 COPY lineage-grd/geometry-governor  /usr/libexec/kd/geometry-governor
+COPY shared/kd-geometry             /usr/local/bin/kd-geometry
 RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/local/bin/kd-health \
         /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run \
-        /usr/libexec/kd/geometry-governor
+        /usr/libexec/kd/geometry-governor /usr/local/bin/kd-geometry
 
 ENTRYPOINT ["/sbin/init"]
 STOPSIGNAL SIGRTMIN+3

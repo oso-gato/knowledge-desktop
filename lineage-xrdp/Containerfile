@@ -32,7 +32,7 @@ FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
 
 # HEAVY/STABLE-EARLY (churn balance): the dnf layer
 RUN dnf -y --setopt=install_weak_deps=False install \
-        xrdp xorgxrdp-glamor xorg-x11-server-Xorg mesa-dri-drivers \
+        xrdp xorgxrdp-glamor xorg-x11-server-Xorg xrandr mesa-dri-drivers \
         xfce4-session xfwm4 xfce4-panel xfdesktop xfce4-settings xfconf thunar \
         xfce4-notifyd dbus-daemon \
         python3 shadow-utils tigervnc-server-common tigervnc-x11-server \
@@ -151,7 +151,9 @@ COPY lineage-xrdp/startwm-kd        /usr/libexec/kd/startwm-kd
 COPY lineage-xrdp/doors-agent       /usr/libexec/kd/doors-agent
 COPY gate/probe/kd-vnc-login        /usr/libexec/kd/kd-vnc-login
 COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
-RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health \
+# WP-12 (C4): the kd-geometry oracle (X11 path — reads Screen 0 current via xrandr)
+COPY shared/kd-geometry             /usr/local/bin/kd-geometry
+RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health /usr/local/bin/kd-geometry \
         /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
         /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check \

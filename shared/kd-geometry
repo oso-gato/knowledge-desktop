@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""kd-geometry (WP-12, C4) — the geometry ORACLE: report the desktop session's CURRENT drawing-area
+size, lineage-agnostically. The C4 observable ("the desktop's drawing area matches the governing
+display's viewport"): an operator — and the COJOIN C4-matrix probe — reads this to verify the
+desktop followed a display to WxH, and that it is not letterboxed/cropped.
+
+- LINEAGE 1 (grd/Wayland): the size of the (single, mirrored) LOGICAL monitor from Mutter's
+  org.gnome.Mutter.DisplayConfig.GetCurrentState — logical_monitor = (x, y, scale, transform,
+  primary, [monitors], props); its pixel size is the current mode of its first monitor / scale.
+- LINEAGE 2 (xrdp/X11): the Screen 0 "current W x H" from `xrandr`.
+
+Auto-detects Wayland (WAYLAND_DISPLAY / a reachable Mutter DisplayConfig) vs X11 (DISPLAY). Prints
+`WIDTHxHEIGHT` on success; exits non-zero with a diagnostic on failure. The two parsers are PURE and
+unit-tested in-box (shared/tests/kd-geometry.test.sh); the live query is host-gate/COJOIN.
+"""
+import os
+import re
+import subprocess
+import sys
+
+
+# ------------------------------------------------------------------ pure parsers (unit-tested)
+def parse_x11_geometry(xrandr_out):
+    """From `xrandr` stdout return 'WxH' of Screen 0's CURRENT size, or None."""
+    m = re.search(r"current\s+(\d+)\s+x\s+(\d+)", xrandr_out)
+    return "%sx%s" % (m.group(1), m.group(2)) if m else None
+
+
+def logical_size_from_state(state):
+    """From a Mutter GetCurrentState unpack (serial, monitors, logical_monitors, props) return the
+    'WxH' pixel size of the PRIMARY logical monitor (the one the C4 governor mirrors onto), or None.
+
+    A logical monitor is (x, y, scale, transform, primary, [monitor_specs], props); its pixel size is
+    the CURRENT mode of its first constituent monitor. We report the governing/primary one — that IS
+    the desktop's drawing area for the mirrored (clone) config the governor applies."""
+    monitors, logicals = state[1], state[2]
+    if not logicals:
+        return None
+    # prefer the primary logical monitor; else the first
+    lm = next((l for l in logicals if l[4]), logicals[0])
+    lm_connectors = {mspec[0] for mspec in lm[5]}  # monitor spec: (connector, vendor, product, serial)
+    for mon in monitors:
+        if mon[0][0] in lm_connectors:
+            for mode in mon[1]:  # mode = (id, w, h, refresh, pref_scale, [scales], {is-current,...})
+                if mode[6].get("is-current"):
+                    return "%dx%d" % (mode[1], mode[2])
+    return None
+
+
+# ------------------------------------------------------------------ live query (host-gate/COJOIN)
+def _query_x11():
+    out = subprocess.run(["xrandr"], text=True, capture_output=True).stdout
+    return parse_x11_geometry(out)
+
+
+def _query_wayland():
+    import gi
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    dc = Gio.DBusProxy.new_sync(
+        bus, Gio.DBusProxyFlags.NONE, None,
+        "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig",
+        "org.gnome.Mutter.DisplayConfig", None)
+    st = dc.call_sync("GetCurrentState", None, Gio.DBusCallFlags.NONE, -1, None).unpack()
+    return logical_size_from_state(st)
+
+
+def main():
+    wayland = os.environ.get("WAYLAND_DISPLAY") or (
+        os.environ.get("XDG_SESSION_TYPE") == "wayland")
+    try:
+        geo = _query_wayland() if wayland else _query_x11()
+    except Exception as e:  # noqa: BLE001
+        sys.exit("kd-geometry: query failed (%s): %s" % ("wayland" if wayland else "x11", e))
+    if not geo:
+        sys.exit("kd-geometry: could not determine the current geometry")
+    print(geo)
+
+
+if __name__ == "__main__":
+    main()
