@@ -21,12 +21,11 @@
 # last target's self-diagnosis).
 # Order: the verdict TAIL keeps the LAST target's self-diagnosis, so the CHURN target goes LAST —
 # WP-08 makes that grd (the first #23 RED proved it: grd's failure was drowned by web's GREEN tail).
-LIVE_GATE_TARGETS="xrdpgeom"
-# ^ SPIKE-TRANSIENT (WP-12 V3 gate-keeper): only the xrdpgeom target runs on this draft PR — a
-# focused GO/NO-GO for "does xorgxrdp's RandR accept an arbitrary external screen size?". The
-# production targets ("xrdp web grd") are proven by the feature PRs; restore this line before the
-# WP-12 build PR. xrdpgeom builds the xrdp image (with the transient xrandr) so it ALSO proves the
-# image still boots with xrandr baked in.
+LIVE_GATE_TARGETS="grdgeom"
+# ^ SPIKE-TRANSIENT (WP-12 V2 gate-keeper): only the grdgeom target runs on this draft PR — a focused
+# GO/NO-GO for "can Mutter ApplyMonitorsConfig force the governing display's geometry across grd
+# virtual monitors (C4-concurrent on the PRIMARY lineage)?". V3 already recorded (gate/spikes/
+# FINDINGS.md). Production targets ("xrdp web grd") ride the feature PRs; restore before the WP-12 PR.
 
 # ---- LINEAGE 1: xrdp (WP-02: real-roster provisioned boot + per-user identity proof) ----
 CFILE_xrdp="lineage-xrdp/Containerfile"
@@ -145,24 +144,23 @@ PROBE_web='kd-health && names=$(runuser -u kdweb -- psql -h /run/postgresql -d g
 HEALTH_TRIES_web="30"
 HEALTH_SLEEP_web="6"
 
-# ---- SPIKE-TRANSIENT: xrdpgeom (WP-12 V3 gate-keeper) — REMOVE before the WP-12 build PR -------
-# V3 (DESIGN V-register): does xorgxrdp's RandR accept an ARBITRARY external screen size? This is
-# the primitive the WP-12 L2 geometry-arbiter re-asserts to track the governing display (C4). The
-# candidate is the REAL provisioned xrdp box (CFILE_xrdp, roster fixture) with a warm prestarted
-# session on the host-gate's own netns. The probe discovers kadm's session Xorg from its cmdline
-# (DISPLAY + -auth path), drives `xrandr --fb 1234x789` (RRSetScreenSize — the same path a VNC
-# SetDesktopSize takes), and asserts the readback == 1234x789. GREEN verdict = V3 GO; a RED carries
-# its own evidence (H4). The faithful VNC-SetDesktopSize round-trip is the WP-12 geometry-c4 probe.
-CFILE_xrdpgeom="lineage-xrdp/Containerfile"
-SECRET_MOUNT_xrdpgeom="/run/secrets/kd-roster"
-SECRET_ENV_xrdpgeom='{"version":1,"box":{"tailnet_authkey":"tskey-fixture-not-a-real-key","endpoints":{"erebus":{"host":"erebus.tail.fixture","port":22,"user":"core"},"fedora-dev":{"host":"fedora-dev.tail.fixture","port":22,"user":"core"}},"shared_folder":true},"admin":{"username":"kadm","password":"adm-aaaa-0000","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYadm fixture@kd"],"tiles":["erebus","fedora-dev"]},"workers":[{"username":"gw1","password":"gw1-bbbb-1111","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYgw1 fixture@kd"],"tiles":["erebus"]},{"username":"gw2","password":"gw2-cccc-2222"},{"username":"gw3","password":"not-the-a13-shape-at-all"},{"username":"gw1","password":"dup-dddd-3333"},{"username":"root","password":"sys-eeee-4444"},{"username":"gw4","password":"gw4-ffff-5555","color":"mauve"},{"username":"gw5","password":"gw5-gggg-6666","tiles":["mars"]}]}'
-FENCE_xrdpgeom="--security-opt label=disable --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL --cap-add NET_BIND_SERVICE --cap-add SYS_CHROOT"
-MEMORY_xrdpgeom="4g"
-PIDS_xrdpgeom="2048"
-HEALTH_xrdpgeom='kd-health'
-# The gate surfaces the CANDIDATE (PID-1) stdout on RED, not the probe's — so the decisive line is
-# written to /proc/1/fd/1 (compressed to ONE line, xrandr dump tr-joined with ~) to survive the tail.
-# Exit code carries GO/NO-GO. before/after/fb-rc distinguish a real NO-GO from a measurement artifact.
-PROBE_xrdpgeom='kd-health || { echo V3-HEALTH-FAIL > /proc/1/fd/1 ; exit 1 ; } ; XL=$(pgrep -u kadm -a Xorg | head -1) ; D=$(echo "$XL" | grep -oE ":[0-9]+" | head -1) ; XA=/home/kadm/.Xauthority ; R(){ runuser -u kadm -- env HOME=/home/kadm DISPLAY=$D XAUTHORITY=$XA "$@" ; } ; SZ(){ R xrandr 2>/dev/null | grep -oE "current [0-9]+ x [0-9]+" | grep -oE "[0-9]+ x [0-9]+" | tr -d " " ; } ; OUT=$(R xrandr 2>/dev/null | grep " connected" | head -1 | cut -d" " -f1) ; B4=$(SZ) ; GE=$(R xrandr --fb 2000x2000 2>&1 1>/dev/null) ; GRC=$? ; sleep 1 ; GROWN=$(SZ) ; R xrandr --fb $B4 >/dev/null 2>&1 ; echo "V3-RESULT out=$OUT before=$B4 grow_rc=$GRC grown=$GROWN growerr=[$(echo "$GE" | tr "\n" "~")]" > /proc/1/fd/1 ; [ "$GROWN" = "2000x2000" ] && exit 0 || exit 1'
-HEALTH_TRIES_xrdpgeom="30"
-HEALTH_SLEEP_xrdpgeom="6"
+# ---- SPIKE-TRANSIENT: grdgeom (WP-12 V2 gate-keeper) — REMOVE before the WP-12 build PR --------
+# V2 (DESIGN V-register): can Mutter's ApplyMonitorsConfig force a common mode across grd's virtual
+# monitors, and does Stop() detach — the L1 geometry-governor's C4-concurrent primitive? The
+# candidate is the REAL provisioned grd box (systemd PID 1; kadm uid 2000). This ITERATION is a
+# DIAGNOSTIC: it connects an RDP client (freerdp on Xvfb) to grd:3389 so Mutter creates a virtual
+# monitor, then queries DisplayConfig.GetCurrentState to see what Mutter exposes. Later iterations
+# drive ApplyMonitorsConfig + Stop(). RED-with-evidence; the decisive line rides /proc/1/fd/1.
+CFILE_grdgeom="lineage-grd/Containerfile"
+SECRET_MOUNT_grdgeom="/run/secrets/kd-roster"
+SECRET_ENV_grdgeom='{"version":1,"box":{"tailnet_authkey":"tskey-fixture-not-a-real-key","endpoints":{"erebus":{"host":"erebus.tail.fixture","port":22,"user":"core"},"fedora-dev":{"host":"fedora-dev.tail.fixture","port":22,"user":"core"}},"shared_folder":true},"admin":{"username":"kadm","password":"adm-aaaa-0000","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYadm fixture@kd"],"tiles":["erebus","fedora-dev"]},"workers":[{"username":"gw1","password":"gw1-bbbb-1111","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYgw1 fixture@kd"],"tiles":["erebus"]},{"username":"gw2","password":"gw2-cccc-2222"},{"username":"gw3","password":"not-the-a13-shape-at-all"},{"username":"gw1","password":"dup-dddd-3333"},{"username":"root","password":"sys-eeee-4444"},{"username":"gw4","password":"gw4-ffff-5555","color":"mauve"},{"username":"gw5","password":"gw5-gggg-6666","tiles":["mars"]}]}'
+FENCE_grdgeom="--systemd=always --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --device /dev/fuse --security-opt label=disable --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add CHOWN --cap-add FOWNER --cap-add FSETID --cap-add DAC_OVERRIDE --cap-add KILL --cap-add NET_BIND_SERVICE --cap-add SYS_CHROOT"
+MEMORY_grdgeom="6g"
+PIDS_grdgeom="4096"
+HEALTH_grdgeom='kd-health'
+# The gate surfaces PID-1 stdout on RED, not the probe's — so the decisive V2-DIAG rides /proc/1/fd/1
+# (one line, logs tr-joined with ~). rdptail shows whether the RDP client attached; mutter shows what
+# DisplayConfig.GetCurrentState exposes (the virtual monitor grd created for the connection).
+PROBE_grdgeom='kd-health || { echo V2-HEALTH-FAIL > /proc/1/fd/1 ; exit 1 ; } ; U(){ runuser -u kadm -- env HOME=/home/kadm XDG_RUNTIME_DIR=/run/user/2000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/2000/bus "$@" ; } ; Xvfb :99 -screen 0 1400x1050x24 >/dev/null 2>&1 & sleep 3 ; DISPLAY=:99 xfreerdp /v:127.0.0.1:3389 /u:kadm /p:adm-aaaa-0000 /cert:ignore /size:1400x1050 /gdi:sw -gfx +auto-reconnect /log-level:INFO >/tmp/rdp.log 2>&1 & RP=$! ; sleep 12 ; MON=$(U gdbus call --session --dest org.gnome.Mutter.DisplayConfig --object-path /org/gnome/Mutter/DisplayConfig --method org.gnome.Mutter.DisplayConfig.GetCurrentState 2>&1 | tr "\n" "~" | cut -c1-1300) ; echo "V2-DIAG rp=$RP rdptail=[$(tail -5 /tmp/rdp.log 2>&1 | tr "\n" "~")] mutter=[$MON]" > /proc/1/fd/1 ; kill $RP 2>/dev/null ; exit 1'
+HEALTH_TRIES_grdgeom="40"
+HEALTH_SLEEP_grdgeom="6"

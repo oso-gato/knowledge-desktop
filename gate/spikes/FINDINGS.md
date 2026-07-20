@@ -90,3 +90,43 @@ stand in for guacd 3.14 here; more iterations would not reach the production ans
 3. RISK carried forward (top item for the COJOIN proof): if grd's RDP daemon crashes server-side even
    with guacd 3.14 / a stock client (mstsc), L1's primary door needs a mitigation (a grd-side codec/env
    pin, provenance-clean) — surface then, with evidence, if it reproduces with the real client.
+
+## V3 — xorgxrdp RandR REJECTS external screen-resize (WP-12 gate-keeper, host-gate, 2026-07-20)
+
+DESIGN V3 (V-register): does xorgxrdp's RandR accept external arbitrary modes, so the L2
+geometry-arbiter can re-assert the governing display's geometry (C4)? Host-gate spike (transient
+`xrdpgeom` target, draft PR #31, 8 iterations) on the REAL provisioned xrdp box, probing kadm's warm
+prestarted session (`:10`, `-auth /home/kadm/.Xauthority`) via `xrandr`.
+
+**DECISION-CRITICAL RESULT: mode DEFINITION is accepted; every external SCREEN-RESIZE is REJECTED.**
+- `xrandr --newmode` + `--addmode` **succeed** (an arbitrary 1234x789 mode is defined + added to the
+  `rdp0` output — `nm=0 am=0`, the mode shows in the readback).
+- `--output rdp0 --mode <arbitrary>`, `--fb <shrink>`, AND `--fb <grow>` **all fail**, every one with
+  the IDENTICAL X error: **`BadMatch (invalid parameter attributes)` on `RRSetScreenSize` (RandR
+  140/7)**. The screen never leaves its client-negotiated 1280x1024.
+- ⇒ the L2 X-screen size is **client-negotiation-driven** (the RDP/VNC client's SetDesktopSize) and
+  **cannot be set externally** by an in-session actor via xrandr/RRSetScreenSize.
+
+**Design implication (why this is a fork, not a note):**
+- BASE C4 holds by xorgxrdp's own design: a client's viewport change → its SetDesktopSize →
+  xorgxrdp resizes the session (single/sequential display-tracking — xrdp's core dynamic-resize;
+  the client round-trip is the faithful proof, host-gate/COJOIN).
+- The DESIGN's L2 arbiter **"RandR re-assertion"** (DESIGN §2 L2 / line 23 — force the governing
+  display's geometry) is **NOT viable**: the arbiter can attribute input governance (XInput2) but
+  **cannot enforce geometry**, because it cannot resize the X screen. There is **no server-side
+  geometry-enforcement path on L2** (RDP display-control + VNC SetDesktopSize are both client→server;
+  a server→client VNC DesktopSize push would itself need the rejected RRSetScreenSize).
+- Consequence for **C4-CONCURRENT on L2** (2+ displays on one session, governing-by-INPUT should
+  win): the session geometry is the LAST SetDesktopSize sender (resize-driven), which the arbiter
+  cannot override to match the most-recently-active-by-input display. C4's "geometry = most recently
+  active display, follows ≤5s" is therefore **not deliverable for the concurrent case on L2** as the
+  arbiter was designed. This EXTENDS the already-disclosed "last SetDesktopSize sender is the family
+  governor" residual (line 23) from the VNC-family to all of L2.
+
+**Owner fork (§11-class — C4-concurrent-on-L2):** the choices are (a) accept C4-concurrent on L2 as
+last-client-resize (a disclosed E6 residual — sequential C4 works; concurrent governing-by-input
+does not force geometry), or (b) reconsider. Decide alongside the **L1/grd V2** result (Mutter
+`ApplyMonitorsConfig` CAN force a monitor config, so the PRIMARY lineage may satisfy C4-concurrent —
+V2 is the next spike). Reusable host-gate facts: xrdp's Xorg uses `-auth .Xauthority` RELATIVE
+(→ absolute `/home/<user>/.Xauthority`); the gate surfaces PID-1 stdout, so a probe writes decisive
+lines to `/proc/1/fd/1`.

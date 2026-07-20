@@ -41,12 +41,6 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         podman crun passt fuse-overlayfs \
         git-core gh \
     && dnf clean all
-# ---- SPIKE-TRANSIENT (WP-12 V3 gate-keeper) — REMOVE before the WP-12 build PR --------------
-# xrandr drives/reads xorgxrdp's RandR to test whether it accepts an arbitrary external screen
-# size (V3). Baked at BUILD time because the host-gate fence has NO runtime egress (WP-04 finding).
-# class-(a) Fedora; if V3 GOes, xrandr becomes a permanent dep of the WP-12 L2 arbiter (kd-geometry).
-RUN dnf -y --setopt=install_weak_deps=False install xrandr && dnf clean all
-# ----------------------------------------------------------------------------------------------
 # WP-13 (A8 terminal door): openssh-server (key-only, config below) + mosh (roaming UDP) + tmux
 # (the one persistent per-user session).
 # WP-13 (agents, G1/G2) + WP-17 (E4 vault): git-core + gh (GitHub CLI, class-(a) Fedora) — git-core
