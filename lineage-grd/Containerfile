@@ -66,7 +66,7 @@ RUN dnf -y --setopt=install_weak_deps=False install \
 # An RDP client (freerdp) + a headless X display (Xvfb) to CONNECT to grd and make Mutter create a
 # virtual monitor, so the V2 probe can query DisplayConfig + test ApplyMonitorsConfig (forced common
 # mode) and Stop() detach. Baked at BUILD time (the host-gate fence has no runtime egress; WP-04).
-RUN dnf -y --setopt=install_weak_deps=False install freerdp xorg-x11-server-Xvfb && dnf clean all
+RUN dnf -y --setopt=install_weak_deps=False install freerdp xorg-x11-server-Xvfb python3-gobject && dnf clean all
 # ----------------------------------------------------------------------------------------------
 
 # ---- systemd unit graph: per-user headless GNOME + grd, boot-enabled -------------------------
