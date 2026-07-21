@@ -61,8 +61,9 @@ run_user "grdctl --headless vnc disable"
 
 # compositor FIRST → wait for mutter to export its RemoteDesktop D-Bus API → then (re)start grd so
 # it reads the store just configured. Three deliberate changes vs the old start-based sequence:
-#   - `restart` (not `start`): grd is no longer --global enabled (see Containerfile), so a plain
-#     start could race; restart cleanly (re)starts it CONFIG-FIRST, forcing a fresh store read
+#   - `restart` (not `start`): grd IS --global enabled (see Containerfile), so it auto-starts
+#     UNCONFIGURED at linger — a plain `start` no-ops on the already-running daemon and leaves it
+#     unconfigured; restart cleanly (re)starts it CONFIG-FIRST, forcing a fresh store read
 #     regardless of whether grd live-reloads (settles the grdctl writer/reader-store question).
 #   - the gdbus wait closes the cold-llvmpipe race: mutter needs seconds to export
 #     org.gnome.Mutter.RemoteDesktop, and a grd that starts before it dies "name has no owner"/0x904.

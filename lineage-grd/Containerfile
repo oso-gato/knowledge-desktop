@@ -29,7 +29,8 @@
 #                         never pulls it — its absence is why the WP-01 skeleton sat `degraded`
 #   gnome-shell           the leaf: headless Wayland compositor + session manager; hard-pulls
 #                         mutter, gjs, gnome-settings-daemon, the xdg portals, dconf
-#   gnome-remote-desktop  the RDP+VNC doors (grdctl + per-user headless daemon); hard-pulls
+#   gnome-remote-desktop  the RDP door (grdctl + per-user headless daemon; the VNC backend is
+#                         DISABLED on this lineage — §2 note (j)); hard-pulls
 #                         pipewire, libei, freerdp-libs
 #   wireplumber           pipewire session manager — PINNED EXPLICIT: the pipewire-session-manager
 #                         virtual has TWO providers and grd's screencast dies (0x904) if dnf
