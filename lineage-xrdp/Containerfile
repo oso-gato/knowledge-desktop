@@ -153,6 +153,7 @@ COPY gate/probe/kd-vnc-login        /usr/libexec/kd/kd-vnc-login
 COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
 COPY gate/probe/kd-rdp-check        /usr/libexec/kd/kd-rdp-check
 COPY gate/probe/kd-isolation-check  /usr/libexec/kd/kd-isolation-check
+COPY gate/probe/kd-secrets-scan     /usr/libexec/kd/kd-secrets-scan
 # WP-12 (C4): the kd-geometry oracle (X11 path — reads Screen 0 current via xrandr)
 COPY shared/kd-geometry             /usr/local/bin/kd-geometry
 RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health /usr/local/bin/kd-geometry \
@@ -160,6 +161,7 @@ RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health /usr/local/
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
         /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check /usr/libexec/kd/kd-rdp-check \
         /usr/libexec/kd/kd-isolation-check \
+        /usr/libexec/kd/kd-secrets-scan \
         /usr/libexec/kd/kd-vault-sync /usr/libexec/kd/kd-vault-init /usr/libexec/kd/kd-vault-driver \
     && chmod 0644 /usr/libexec/kd/kd-vault-gitignore
 
