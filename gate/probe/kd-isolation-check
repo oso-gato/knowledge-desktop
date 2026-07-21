@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# kd-isolation-check <home_base> <userA> <userB> <admin>  (WP-20 gate probe; D2/D3/A9) — proves
+# per-user privacy is ABSOLUTE on the provisioned box, by RUNNING it (N5): no user may read another
+# user's home, and — the load-bearing clause — there is NO SUPERVISORY EXCEPTION, so the ADMIN
+# cannot read a worker's home either. Each user CAN read their OWN home (positive control, so a
+# blanket-deny bug can't pass). RC-EXACT + self-diagnosing (the kd-vnc-check discipline).
+#
+# The MECHANISM is the home directory MODE (0700, owner-only) over per-user primary groups; this
+# asserts the OBSERVABLE, not the mechanism — kd-provision does not chmod the home explicitly, so
+# whether isolation actually holds rests on the image HOME_MODE and is UNPROVEN without this probe.
+#
+# A denial must be EACCES (permission), never ENOENT (absence): the home must EXIST but be
+# unreadable — otherwise a mis-provisioned (missing) home would masquerade as "isolated".
+#
+#   exit 0 = cross-home reads DENIED (incl. admin), own-home reads OK
+#   exit 1 = a privacy BREACH or a broken own-home read (a real gate RED; self-diagnosing to stderr)
+#   exit 2 = usage error
+set -u
+[ $# -eq 4 ] || { echo "usage: kd-isolation-check <home_base> <userA> <userB> <admin>" >&2; exit 2; }
+base="$1"; A="$2"; B="$3"; ADM="$4"
+fail(){ echo "kd-isolation-check: $*" >&2; }
+
+# Every home must EXIST first — so a DENIAL below is isolation, not a missing directory.
+for u in "$A" "$B" "$ADM"; do
+    [ -d "$base/$u" ] || { fail "home $base/$u ABSENT — cannot distinguish isolation from a missing home"; exit 1; }
+done
+
+# reader (dropped to their uid via runuser) must be DENIED listing target's home — EACCES, not ENOENT.
+denied(){ # <reader> <target>
+    local out rc
+    out="$(runuser -u "$1" -- ls -la "$base/$2" 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+        fail "$1 CAN read $base/$2 (rc 0) — cross-user privacy BREACHED"
+        return 1
+    fi
+    if ! printf '%s' "$out" | grep -qiE 'permission denied'; then
+        fail "$1's read of $base/$2 failed but NOT with EACCES (rc=$rc): $out — home missing/mis-provisioned, not isolated"
+        return 1
+    fi
+    return 0
+}
+# positive control: a user CAN read their OWN home (else the deny above is a meaningless blanket fail).
+allowed(){ runuser -u "$1" -- ls "$base/$1" >/dev/null 2>&1; }
+
+allowed "$A"          || { fail "$A cannot read its OWN home $base/$A — provisioning broken"; exit 1; }
+denied  "$A"  "$B"    || exit 1     # worker cannot read another worker's home (D2/D3)
+denied  "$B"  "$A"    || exit 1     # ... symmetrically
+denied  "$ADM" "$A"   || { fail "the ADMIN read a worker's home — NO-SUPERVISORY-EXCEPTION VIOLATED (D2)"; exit 1; }
+
+echo "kd-isolation-check: D2/D3 GREEN — cross-home reads DENIED (incl. admin $ADM, no supervisory exception); own-home OK"
