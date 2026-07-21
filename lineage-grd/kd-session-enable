@@ -61,8 +61,9 @@ run_user "grdctl --headless vnc disable"
 
 # compositor FIRST → wait for mutter to export its RemoteDesktop D-Bus API → then (re)start grd so
 # it reads the store just configured. Three deliberate changes vs the old start-based sequence:
-#   - `restart` (not `start`): grd is no longer --global enabled (see Containerfile), so a plain
-#     start could race; restart cleanly (re)starts it CONFIG-FIRST, forcing a fresh store read
+#   - `restart` (not `start`): grd IS --global enabled (see Containerfile), so it auto-starts
+#     UNCONFIGURED at linger — a plain `start` no-ops on the already-running daemon and leaves it
+#     unconfigured; restart cleanly (re)starts it CONFIG-FIRST, forcing a fresh store read
 #     regardless of whether grd live-reloads (settles the grdctl writer/reader-store question).
 #   - the gdbus wait closes the cold-llvmpipe race: mutter needs seconds to export
 #     org.gnome.Mutter.RemoteDesktop, and a grd that starts before it dies "name has no owner"/0x904.
@@ -72,5 +73,11 @@ run_user "grdctl --headless vnc disable"
 run_user 'systemctl --user enable --now gnome-shell-headless.service'
 run_user 'for i in $(seq 1 60); do gdbus introspect --session --dest org.gnome.Mutter.RemoteDesktop --object-path /org/gnome/Mutter/RemoteDesktop >/dev/null 2>&1 && break; sleep 0.5; done'
 run_user 'systemctl --user restart gnome-remote-desktop-headless.service'
+
+# WP-12 (C4 last-display-wins): the geometry-governor mirrors concurrent displays onto the governing
+# one via Mutter ApplyMonitorsConfig (V2-proven). --global-enabled at build, but start it explicitly
+# here so it is up as soon as the compositor is configured (idempotent). A failure is NOT box-fatal:
+# single-display C4 (client-driven resize) works without it, so log-and-continue.
+run_user 'systemctl --user enable --now kd-geometry-governor.service' || echo "kd-session-enable: geometry-governor start failed (C4-concurrent degraded; single-display C4 unaffected)" >&2
 
 echo "kd-session-enable: ${user} session up (rdp :${rdp_port}; native VNC disabled — RDP+web lineage)"

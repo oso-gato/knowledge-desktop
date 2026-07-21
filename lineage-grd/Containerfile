@@ -29,7 +29,8 @@
 #                         never pulls it — its absence is why the WP-01 skeleton sat `degraded`
 #   gnome-shell           the leaf: headless Wayland compositor + session manager; hard-pulls
 #                         mutter, gjs, gnome-settings-daemon, the xdg portals, dconf
-#   gnome-remote-desktop  the RDP+VNC doors (grdctl + per-user headless daemon); hard-pulls
+#   gnome-remote-desktop  the RDP door (grdctl + per-user headless daemon; the VNC backend is
+#                         DISABLED on this lineage — §2 note (j)); hard-pulls
 #                         pipewire, libei, freerdp-libs
 #   wireplumber           pipewire session manager — PINNED EXPLICIT: the pipewire-session-manager
 #                         virtual has TWO providers and grd's screencast dies (0x904) if dnf
@@ -40,6 +41,8 @@
 #   xdg-user-dirs         ~/Documents etc — no gnome-session autostart exists to create them
 #   openssl               per-user RDP TLS cert generation (grd RDP will not bind without cert+key)
 #   python3               kd-provision runtime (WP-06)
+#   python3-gobject       gi.repository.Gio for the WP-12 geometry-governor (Mutter DisplayConfig
+#                         ApplyMonitorsConfig — C4); gdbus's text parser can't build the nested variant
 #   shadow-utils          useradd/usermod/chpasswd + newuidmap/newgidmap (provisioning; B3 bands)
 #   acl                   setfacl — the D4 shared-folder default ACL
 #   procps-ng             pgrep — kd-health process liveness (F2)
@@ -57,7 +60,7 @@ RUN dnf -y --setopt=install_weak_deps=False install \
         systemd systemd-pam dbus-broker \
         gnome-shell gnome-remote-desktop wireplumber \
         nautilus mesa-dri-drivers xdg-user-dirs openssl \
-        python3 shadow-utils acl procps-ng glibc-langpack-en \
+        python3 python3-gobject shadow-utils acl procps-ng glibc-langpack-en \
         openssh-server mosh tmux \
         podman crun passt fuse-overlayfs \
         git-core gh \
@@ -74,6 +77,7 @@ RUN dnf -y --setopt=install_weak_deps=False install \
 # environment.d: session identity + the llvmpipe/GL display env for EVERY user manager.
 # user-cgroup-fix: defensive drop-in for the F44 systemd-259 user@.service cgroup EBUSY (#41278).
 COPY lineage-grd/gnome-shell-headless.service  /etc/systemd/user/gnome-shell-headless.service
+COPY lineage-grd/kd-geometry-governor.service  /etc/systemd/user/kd-geometry-governor.service
 COPY lineage-grd/grd-headless-override.conf    /etc/systemd/user/gnome-remote-desktop-headless.service.d/override.conf
 COPY lineage-grd/environment.d-20-session.conf /etc/environment.d/20-kd-session.conf
 COPY lineage-grd/environment.d-30-display.conf /etc/environment.d/30-kd-display.conf
@@ -102,7 +106,7 @@ COPY lineage-grd/kd-provision.service          /usr/lib/systemd/system/kd-provis
 # load-bearing; masking them would be the whack-a-mole over-reach the tier-1 rewrite avoids.
 # The dangling multi-user.target.wants/systemd-homed symlink (homed not installed) is removed for a clean audit.
 RUN systemctl enable kd-provision.service sshd.service \
-    && systemctl --global enable gnome-shell-headless.service gnome-remote-desktop-headless.service \
+    && systemctl --global enable gnome-shell-headless.service gnome-remote-desktop-headless.service kd-geometry-governor.service \
     && systemctl set-default multi-user.target \
     && systemctl mask gdm.service systemd-oomd.service systemd-oomd.socket \
         geoclue.service rtkit-daemon.service colord.service power-profiles-daemon.service \
@@ -194,9 +198,13 @@ COPY lineage-grd/kd-session-enable  /usr/libexec/kd/kd-session-enable
 COPY lineage-grd/kd-health          /usr/local/bin/kd-health
 COPY shared/kd-agent-env            /usr/libexec/kd/kd-agent-env
 COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
+# WP-12 (C4): the geometry-governor + the kd-geometry oracle (both python3-gi; python3-gobject dep)
+COPY lineage-grd/geometry-governor  /usr/libexec/kd/geometry-governor
+COPY shared/kd-geometry             /usr/local/bin/kd-geometry
 RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/local/bin/kd-health \
-        /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run
+        /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run \
+        /usr/libexec/kd/geometry-governor /usr/local/bin/kd-geometry
 
 ENTRYPOINT ["/sbin/init"]
 STOPSIGNAL SIGRTMIN+3
