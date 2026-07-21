@@ -24,8 +24,10 @@ AddDevice=/dev/fuse
 Volume=kd-grd-home:/home:rw,nosuid,nodev
 Volume=kd-grd-state:/var/lib/kd:rw,nosuid,nodev
 Volume=kd-grd-shared:/srv/shared:rw,nosuid,nodev
-# F4: the co-deployed secondary serves 8443 (tls internal / DNS-01 upgrade path — E6 R16)
-PublishPort=8443:8443
+# F4: the co-deployed secondary serves EXTERNAL 8443 → the netns-joined web sidecar's Caddy :443
+# (kd-web-grd.container). The shared web image binds :443, so the map is 8443:443 — NOT 8443:8443,
+# which would forward to a dead port and leave the L1 web door dark. tls internal / DNS-01 (E6 R16).
+PublishPort=8443:443
 Network=kd-grd.network
 Notify=healthy
 HealthCmd=kd-health
