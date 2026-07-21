@@ -48,6 +48,12 @@ lck "gnome-shell-headless --global"  etc/systemd/user/default.target.wants/gnome
 # grd IS --global enabled: `grdctl --headless enable` configures a RUNNING daemon, so grd must
 # auto-start at linger; the unconfigured-start is resolved by kd-session-enable's `restart` (re-read).
 lck "grd-headless --global (grdctl enable needs the running daemon)" etc/systemd/user/default.target.wants/gnome-remote-desktop-headless.service
+# WP-12 (C4): the geometry-governor is present, carries the V2-proven mirror mechanism, is --global
+# enabled (auto-starts per user, C3), and kd-session-enable starts it explicitly.
+xck "geometry-governor executable (WP-12 C4)"        usr/libexec/kd/geometry-governor
+ck  "geometry-governor: ApplyMonitorsConfig mirror"  usr/libexec/kd/geometry-governor 'ApplyMonitorsConfig'
+lck "geometry-governor --global (C4 auto-start)"     etc/systemd/user/default.target.wants/kd-geometry-governor.service
+ck  "kd-session-enable starts the governor"          usr/libexec/kd/kd-session-enable 'kd-geometry-governor'
 
 # the unit graph content landed
 ck "compositor unit: headless + pinned socket" etc/systemd/user/gnome-shell-headless.service '--headless --wayland-display wayland-grd'

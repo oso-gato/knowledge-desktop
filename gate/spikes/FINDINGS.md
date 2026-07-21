@@ -90,3 +90,79 @@ stand in for guacd 3.14 here; more iterations would not reach the production ans
 3. RISK carried forward (top item for the COJOIN proof): if grd's RDP daemon crashes server-side even
    with guacd 3.14 / a stock client (mstsc), L1's primary door needs a mitigation (a grd-side codec/env
    pin, provenance-clean) — surface then, with evidence, if it reproduces with the real client.
+
+## V3 — xorgxrdp RandR REJECTS external screen-resize (WP-12 gate-keeper, host-gate, 2026-07-20)
+
+DESIGN V3 (V-register): does xorgxrdp's RandR accept external arbitrary modes, so the L2
+geometry-arbiter can re-assert the governing display's geometry (C4)? Host-gate spike (transient
+`xrdpgeom` target, draft PR #31, 8 iterations) on the REAL provisioned xrdp box, probing kadm's warm
+prestarted session (`:10`, `-auth /home/kadm/.Xauthority`) via `xrandr`.
+
+**DECISION-CRITICAL RESULT: mode DEFINITION is accepted; every external SCREEN-RESIZE is REJECTED.**
+- `xrandr --newmode` + `--addmode` **succeed** (an arbitrary 1234x789 mode is defined + added to the
+  `rdp0` output — `nm=0 am=0`, the mode shows in the readback).
+- `--output rdp0 --mode <arbitrary>`, `--fb <shrink>`, AND `--fb <grow>` **all fail**, every one with
+  the IDENTICAL X error: **`BadMatch (invalid parameter attributes)` on `RRSetScreenSize` (RandR
+  140/7)**. The screen never leaves its client-negotiated 1280x1024.
+- ⇒ the L2 X-screen size is **client-negotiation-driven** (the RDP/VNC client's SetDesktopSize) and
+  **cannot be set externally** by an in-session actor via xrandr/RRSetScreenSize.
+
+**Design implication (why this is a fork, not a note):**
+- BASE C4 holds by xorgxrdp's own design: a client's viewport change → its SetDesktopSize →
+  xorgxrdp resizes the session (single/sequential display-tracking — xrdp's core dynamic-resize;
+  the client round-trip is the faithful proof, host-gate/COJOIN).
+- The DESIGN's L2 arbiter **"RandR re-assertion"** (DESIGN §2 L2 / line 23 — force the governing
+  display's geometry) is **NOT viable**: the arbiter can attribute input governance (XInput2) but
+  **cannot enforce geometry**, because it cannot resize the X screen. There is **no server-side
+  geometry-enforcement path on L2** (RDP display-control + VNC SetDesktopSize are both client→server;
+  a server→client VNC DesktopSize push would itself need the rejected RRSetScreenSize).
+- Consequence for **C4-CONCURRENT on L2** (2+ displays on one session, governing-by-INPUT should
+  win): the session geometry is the LAST SetDesktopSize sender (resize-driven), which the arbiter
+  cannot override to match the most-recently-active-by-input display. C4's "geometry = most recently
+  active display, follows ≤5s" is therefore **not deliverable for the concurrent case on L2** as the
+  arbiter was designed. This EXTENDS the already-disclosed "last SetDesktopSize sender is the family
+  governor" residual (line 23) from the VNC-family to all of L2.
+
+**Owner fork (§11-class — C4-concurrent-on-L2):** the choices are (a) accept C4-concurrent on L2 as
+last-client-resize (a disclosed E6 residual — sequential C4 works; concurrent governing-by-input
+does not force geometry), or (b) reconsider. Decide alongside the **L1/grd V2** result (see below).
+Reusable host-gate facts: xrdp's Xorg uses `-auth .Xauthority` RELATIVE (→ absolute
+`/home/<user>/.Xauthority`); the gate surfaces PID-1 stdout, so a probe writes decisive lines to
+`/proc/1/fd/1`.
+
+## V2 — Mutter ApplyMonitorsConfig APPLIES an external config on grd (WP-12 gate-keeper, host-gate, 2026-07-20)
+
+DESIGN V2: can Mutter's `ApplyMonitorsConfig` force a config across grd's virtual monitors (the L1
+geometry-governor's C4-concurrent primitive)? Host-gate spike (transient `grdgeom` target, draft
+PR #31, 7 iterations): a HARDENED freerdp client (Xvfb, `/gdi:sw -gfx -clipboard /bpp:16`) connects
+to grd:3389 → Mutter creates a virtual monitor → `ApplyMonitorsConfig` called via python3-gi.
+
+**DECISION-CRITICAL RESULT = V2 GO.**
+- The hardened freerdp client HOLDS a STABLE grd RDP session (`conn=alive`) — V1's instability is
+  tamed by stripping exactly the test-only artifacts V1 named (GFX/AV1, clipboard-FUSE, hi-bpp).
+- Mutter's DisplayConfig fully exposes the virtual monitor: `Meta-0 "Virtual remote monitor"`, mode
+  1400x1050@60, scales `[1.0..2.0]`, `layout-mode=1`, `supports-changing-layout-mode=true`.
+- **`ApplyMonitorsConfig` APPLIED an external change**: `bscale=1.0 apply=APPLIED-OK ascale=1.25` —
+  Mutter accepted + applied scale 1.0→1.25 on the virtual monitor. CATEGORICALLY different from
+  L2/xorgxrdp (V3: `RRSetScreenSize` `BadMatch` — flat rejection). Mutter IS a full external
+  display-config API. ⇒ the L1 governor CAN force geometry (mirror views onto one logical monitor
+  at the governing config). The Mutter-clone same-mode constraint + `Stop()`-detach + libei
+  per-connection input attribution (V5) get their faithful multi-connection proof at COJOIN (2
+  stable clients); the API mechanism is PROVEN here.
+
+## C4 RESOLUTION (both lineages empirically settled — AGENT-DECIDED, pending owner ratification)
+
+The user directed "keep driving to ship"; this is the only viable resolution given the empirical
+constraints, RECORDED transparently for owner review (a §5 lineage delta + E6 residual):
+- **L1 (grd, PRIMARY): C4-concurrent DELIVERED** — governor forces geometry via Mutter
+  `ApplyMonitorsConfig` (PROVEN); input attribution by libei per-connection device (V5, build+COJOIN).
+- **L2 (xrdp, FALLBACK): C4-concurrent DEGRADES to last-client-resize** — the arbiter attributes
+  input governance but CANNOT force geometry (V3: RRSetScreenSize rejected). BASE C4
+  (single/sequential display-tracking) works on BOTH (xorgxrdp/grd client-driven resize is their
+  core feature).
+- This is a THIRD §5 lineage delta (C4-concurrent geometry-enforcement: full on L1, last-resizer on
+  L2), proposed as a disclosed E6 residual extending the already-disclosed line-23 residual from the
+  VNC-family to all of L2. The primary fully meets C4; the fallback degrades only in the concurrent
+  case. **Owner: ratify or override.** Reusable: grd RDP holds under `/gdi:sw -gfx -clipboard
+  /bpp:16`; `ApplyMonitorsConfig` via python3-gi (gdbus text-parser can't build the nested variant);
+  the grd (systemd-PID-1) gate surfaces the probe's PLAIN stdout, not `/proc/1/fd/1`.

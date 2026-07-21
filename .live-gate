@@ -20,8 +20,10 @@
 # stays a bare systemd skeleton until WP-08. Order: grd, xrdp, web LAST (the verdict TAIL keeps the
 # last target's self-diagnosis).
 # Order: the verdict TAIL keeps the LAST target's self-diagnosis, so the CHURN target goes LAST —
-# WP-08 makes that grd (the first #23 RED proved it: grd's failure was drowned by web's GREEN tail).
-LIVE_GATE_TARGETS="xrdp web grd"
+# WP-08 made that grd (the first #23 RED proved it: grd's failure was drowned by web's GREEN tail);
+# WP-12 makes it xrdp (this WP's churn = xrdp [kd-geometry oracle + xrandr] and grd [governor]; grd
+# already re-gated GREEN on this PR's tree, so xrdp carries the diagnosis priority).
+LIVE_GATE_TARGETS="grd web xrdp"
 
 # ---- LINEAGE 1: xrdp (WP-02: real-roster provisioned boot + per-user identity proof) ----
 CFILE_xrdp="lineage-xrdp/Containerfile"

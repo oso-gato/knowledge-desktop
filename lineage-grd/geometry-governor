@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""geometry-governor (LINEAGE 1 — GRD/Wayland/GNOME; DESIGN §2 C4/A11-concurrent; WP-12) — the L1
+half of "last display wins" (C4). Runs in each user's headless GNOME session (started by
+kd-session-enable). When two or more remote displays are attached to the ONE session (A11: each grd
+RDP connection is a virtual monitor), it MIRRORS every attached view onto one logical monitor sized
+to the GOVERNING display via Mutter's org.gnome.Mutter.DisplayConfig.ApplyMonitorsConfig — the
+mechanism the WP-12 V2 gate-keeper spike PROVED accepts + applies an external config on grd
+(gate/spikes/FINDINGS.md §V2: `apply=APPLIED-OK ascale=1.0→1.25`), unlike L2/xorgxrdp (V3: RandR
+RRSetScreenSize rejected).
+
+Governance (which display is "most recently active"): the input-attribution shell component
+(WP-12, libei per-connection device → DESIGN §2 line 35) writes the governing monitor's connector
+to $XDG_RUNTIME_DIR/kd-geometry-governing; the governor reads it and re-asserts. Absent that file
+(single display, or attribution not yet up), the sole/primary monitor governs — so single/sequential
+C4 (one display resizing) works with no attribution at all.
+
+TIER (N4/N5): the config-COMPUTATION (compute_mirror_config) is pure + unit-tested in-box
+(shared/tests/kd-geometry-governor.test via a fixture GetCurrentState). The live ApplyMonitorsConfig
+round-trip is PROVEN by V2; the full C4 matrix (≤5s follow, single-click transfer, detach,
+apps-undisturbed across 2 concurrent connections) rides the COJOIN gate tier (2 stable clients),
+the same deferral as WP-11-L2's paint proof.
+
+Debounce: any governing change re-asserts immediately on the FIRST event, then coalesces further
+re-assertions within DEBOUNCE_S (DESIGN §2 line 23: "any attributed input event claims governance
+immediately; only the RandR re-assertion is debounced").
+"""
+import os
+import sys
+import time
+
+DEBOUNCE_S = 0.4
+GOV_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid()),
+                        "kd-geometry-governing")
+
+
+# ------------------------------------------------------------------ pure config computation
+def _current_mode(monitor):
+    """Return (mode_id, width, height) of a monitor's current mode, else its first mode."""
+    modes = monitor[1]
+    for m in modes:
+        # m = (id, width, height, refresh, preferred_scale, supported_scales, props{is-current,...})
+        if m[6].get("is-current"):
+            return (m[0], m[1], m[2])
+    if modes:
+        m = modes[0]
+        return (m[0], m[1], m[2])
+    return (None, None, None)
+
+
+def _mode_for_resolution(monitor, width, height):
+    """A monitor's mode id at exactly (width,height), or None (the Mutter clone same-mode constraint:
+    a monitor that has no matching mode cannot join the mirrored logical monitor — DESIGN §2)."""
+    for m in monitor[1]:
+        if m[1] == width and m[2] == height:
+            return m[0]
+    return None
+
+
+def compute_mirror_config(state, governing_connector=None):
+    """PURE: from a GetCurrentState unpack (serial, monitors, logical_monitors, props) compute the
+    ApplyMonitorsConfig logical_monitors arg that mirrors EVERY attachable monitor onto ONE logical
+    monitor (clone) at the GOVERNING display's resolution.
+
+    Returns (serial, logical_monitors, dropped) where:
+      logical_monitors = [(x, y, scale, transform, primary, [(connector, mode_id, {}), ...])]
+      dropped          = connectors that lack the governing resolution (can't clone — disclosed)
+    Returns (serial, None, []) when there is nothing to configure (0 monitors)."""
+    serial, monitors = state[0], state[1]
+    if not monitors:
+        return (serial, None, [])
+    # the governing monitor: the named one if present, else the first (sole/primary) monitor
+    gov = None
+    if governing_connector:
+        for mon in monitors:
+            if mon[0][0] == governing_connector:
+                gov = mon
+                break
+    if gov is None:
+        gov = monitors[0]
+    _, gw, gh = _current_mode(gov)
+    specs, dropped = [], []
+    for mon in monitors:
+        connector = mon[0][0]
+        mid = _mode_for_resolution(mon, gw, gh)
+        if mid is None:
+            # cannot share the governing mode → keep it on its own current mode (it will not clone
+            # cleanly; recorded as dropped so the caller/health can disclose the residual)
+            mid = _current_mode(mon)[0]
+            dropped.append(connector)
+        specs.append((connector, mid, {}))
+    logical = [(0, 0, 1.0, 0, True, specs)]
+    return (serial, logical, dropped)
+
+
+def config_matches(state, desired_logical):
+    """PURE: is the current logical layout already the desired single-clone config? (avoid a
+    redundant ApplyMonitorsConfig storm.) Compares connector sets on the one logical monitor."""
+    logical = state[2]
+    if len(logical) != len(desired_logical) or len(logical) != 1:
+        return False
+    cur_conns = sorted(m[0] for m in logical[0][5])  # logical monitor's monitors: (connector, ...)
+    want_conns = sorted(s[0] for s in desired_logical[0][5])
+    return cur_conns == want_conns
+
+
+# ------------------------------------------------------------------ D-Bus driver (live session)
+def _read_governing():
+    try:
+        with open(GOV_FILE, encoding="utf-8") as f:
+            v = f.read().strip()
+            return v or None
+    except OSError:
+        return None
+
+
+def main():
+    import gi
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio, GLib
+
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    dc = Gio.DBusProxy.new_sync(
+        bus, Gio.DBusProxyFlags.NONE, None,
+        "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig",
+        "org.gnome.Mutter.DisplayConfig", None)
+
+    state_holder = {"last": 0.0}
+
+    def reassert(_reason):
+        # debounce the re-assertion (not the governance claim itself)
+        now = time.monotonic()
+        if now - state_holder["last"] < DEBOUNCE_S:
+            return
+        state_holder["last"] = now
+        try:
+            st = dc.call_sync("GetCurrentState", None, Gio.DBusCallFlags.NONE, -1, None).unpack()
+        except Exception as e:  # noqa: BLE001 — never let a transient bus error kill the governor
+            print("geometry-governor: GetCurrentState failed: %s" % e, flush=True)
+            return
+        if len(st[1]) < 2:
+            return  # 0-1 monitor: nothing to mirror; the sole display already governs
+        serial, logical, dropped = compute_mirror_config(st, _read_governing())
+        if logical is None or config_matches(st, logical):
+            return
+        args = GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", (serial, 1, logical, {}))
+        try:
+            dc.call_sync("ApplyMonitorsConfig", args, Gio.DBusCallFlags.NONE, -1, None)
+            msg = "geometry-governor: mirrored %d monitor(s) onto the governing display" % len(st[1])
+            if dropped:
+                msg += " (dropped, no shared mode: %s)" % ",".join(dropped)
+            print(msg, flush=True)
+        except Exception as e:  # noqa: BLE001
+            print("geometry-governor: ApplyMonitorsConfig failed: %s" % e, flush=True)
+
+    # Mutter emits MonitorsChanged when a connection attaches/detaches (a new virtual monitor)
+    dc.connect("g-signal", lambda _p, _s, signal, _params:
+               reassert("monitors-changed") if signal == "MonitorsChanged" else None)
+    # the input-attribution component pokes us via SIGHUP when governance shifts (immediate claim)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, 1, lambda: (reassert("governance-shift"), True)[1])
+    # a slow poll backstop so a missed signal still converges within C4's 5s budget
+    GLib.timeout_add_seconds(3, lambda: (reassert("poll"), True)[1])
+    reassert("startup")
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

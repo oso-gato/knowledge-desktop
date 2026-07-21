@@ -73,4 +73,10 @@ run_user 'systemctl --user enable --now gnome-shell-headless.service'
 run_user 'for i in $(seq 1 60); do gdbus introspect --session --dest org.gnome.Mutter.RemoteDesktop --object-path /org/gnome/Mutter/RemoteDesktop >/dev/null 2>&1 && break; sleep 0.5; done'
 run_user 'systemctl --user restart gnome-remote-desktop-headless.service'
 
+# WP-12 (C4 last-display-wins): the geometry-governor mirrors concurrent displays onto the governing
+# one via Mutter ApplyMonitorsConfig (V2-proven). --global-enabled at build, but start it explicitly
+# here so it is up as soon as the compositor is configured (idempotent). A failure is NOT box-fatal:
+# single-display C4 (client-driven resize) works without it, so log-and-continue.
+run_user 'systemctl --user enable --now kd-geometry-governor.service' || echo "kd-session-enable: geometry-governor start failed (C4-concurrent degraded; single-display C4 unaffected)" >&2
+
 echo "kd-session-enable: ${user} session up (rdp :${rdp_port}; native VNC disabled — RDP+web lineage)"
