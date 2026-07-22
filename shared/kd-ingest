@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# kd-ingest (WP-18, E5) — the untrusted-content ingest pipeline: a leak-proof, two-stage sandbox for
+# feeding fetched web content to the wiki/vault WITHOUT ever giving that content credentials, vault
+# access, or (in the stage that parses it) the network. Runs entirely inside the invoking user's OWN
+# rootless podman (B3, WP-16) — no host access, one uid.
+#
+# E5 (00-REQUIREMENTS): "Untrusted-content processing runs with no credentials, no vault access, and
+# no network — a leak-proof one-shot sandbox." DESIGN §E5 [ADJ-17]:
+#
+#   STAGE 1 — fetch  (egress; moves OPAQUE BYTES; NEVER parses):
+#       curl the URL to a scratch file inside a hardened container. It has network (that is its whole
+#       job) but NO vault, NO home, NO secrets mount, dropped caps, read-only rootfs, resource+time
+#       bound. It does not interpret a single byte it fetches — parsing is stage 2's job, under no net.
+#   STAGE 2 — process (NO network; parses the opaque bytes):
+#       run the parser on the fetched bytes with `--network=none` so a malicious document can reach
+#       nothing: `--cap-drop=ALL --read-only`, env cleared, mounts ONLY /in (ro) + /out — the vault,
+#       every home, and every secret are simply NOT PRESENT (ENOENT), so there is nothing to leak or
+#       corrupt. One-shot (`--rm`), resource+time bound.
+#
+# The two stages are SEPARATE containers precisely so the byte that has the network never parses, and
+# the byte that parses never has the network. Containment is the requirement; the specific parser is
+# a placeholder (H1: no specific toolset is a requirement) — MVP ships a deterministic offline
+# HTML->text extractor, replaceable without touching this contract.
+#
+# TIER (honest, N4/N5): the leak-proof CONTRACT below and a REAL contained process-stage run
+# (no-net, vault-ENOENT, empty-env, one-shot, timeout-bound) are proven IN-BOX by
+# shared/tests/kd-ingest.test.sh — the process stage is an ordinary `--network=none` container, not a
+# nested-nested run, so the dev engine runs it faithfully. DEFERRED to host-gate (V27, DESIGN §E5),
+# exactly as WP-16 deferred its nested run: (a) the process image delivered as a CI-built,
+# digest-pinned OCI archive `podman load`ed per user at provision ([ADJ-17]) — MVP builds it from the
+# shipped Containerfile; (b) end-to-end fetch over the pasta-reachable gate fixture; (c) whether the
+# cgroup resource bounds (--memory/--pids-limit) actually enforce under the per-user NESTED engine, or
+# re-scope honestly to timeout(1) as the enforced bound (DESIGN §E5, challenge VST-#10).
+#
+# Usage:
+#   kd-ingest fetch   <url> <outdir>     # stage 1 only -> <outdir>/fetched
+#   kd-ingest process <indir> <outdir>   # stage 2 only  <indir> -> <outdir>
+#   kd-ingest run     <url> <outdir>     # stage 1 -> stage 2 (the pipeline)
+#
+# Test/tuning seams (harmless in production):
+#   KD_INGEST_IMAGE     process/fetch sandbox image      (default localhost/kd-ingest-sandbox:latest)
+#   KD_INGEST_TIMEOUT   per-stage wall-clock bound, secs (default 60)
+#   KD_INGEST_MEMORY    per-stage memory bound            (default 256m)
+#   KD_INGEST_PIDS      per-stage pids-limit              (default 128)
+#   KD_INGEST_PODMAN    podman binary                     (default podman)
+#   KD_INGEST_DRYRUN=1  print the exact podman argv (one token per line, NUL-safe) and run NOTHING —
+#                       the engine-free contract seam the test asserts against.
+set -uo pipefail
+
+IMAGE="${KD_INGEST_IMAGE:-localhost/kd-ingest-sandbox:latest}"
+TMO="${KD_INGEST_TIMEOUT:-60}"
+MEM="${KD_INGEST_MEMORY:-256m}"
+PIDS="${KD_INGEST_PIDS:-128}"
+PODMAN="${KD_INGEST_PODMAN:-podman}"
+SANDBOX_DIR="${KD_INGEST_SANDBOX_DIR:-/usr/local/share/kd-ingest-sandbox}"
+
+die(){ echo "kd-ingest: $*" >&2; exit 2; }
+
+# Make sure the process/fetch sandbox image is loaded in the user's OWN store before running a stage
+# — NEVER run a stage with no sandbox (fail-closed). Production [ADJ-17] delivers the image as a
+# CI-built, digest-pinned OCI archive `podman load`ed per user at provision (gate-compatible: the
+# no-egress host-gate fence cannot pull or dnf) — that per-user load rides host-gate; the shipped
+# recipe (SANDBOX_DIR) is what CI builds the archive FROM. Absent the image, die CLEARLY pointing at
+# that load. Skipped under DRYRUN (contract-only, runs nothing).
+ensure_image(){
+    [ "${KD_INGEST_DRYRUN:-0}" = 1 ] && return 0
+    "$PODMAN" image exists "$IMAGE" 2>/dev/null \
+        || die "sandbox image '$IMAGE' is not loaded — provision must podman-load its OCI archive first ([ADJ-17]; recipe at $SANDBOX_DIR)"
+}
+
+# Absolute, existing directory (bind sources must be real paths — fail-closed, never create a mount
+# source implicitly). Emits the resolved absolute path.
+absdir(){
+    local d="$1"
+    [ -d "$d" ] || die "not a directory: $d"
+    (cd "$d" && pwd)
+}
+
+# Run (or, under KD_INGEST_DRYRUN, PRINT) a podman argv. One place builds the invocation so the test
+# asserts exactly what production runs.
+emit_or_run(){
+    if [ "${KD_INGEST_DRYRUN:-0}" = 1 ]; then
+        printf '%s\n' "$@"
+        return 0
+    fi
+    "$@"
+}
+
+# The containment flags COMMON to both stages (least privilege, one-shot, bounded). The ONLY
+# difference between the stages is the network and the /in mount (added by each caller).
+common_flags(){
+    printf '%s\n' \
+        --rm \
+        --cap-drop=ALL \
+        --security-opt=no-new-privileges \
+        --read-only \
+        --userns=keep-id \
+        --memory="$MEM" \
+        --pids-limit="$PIDS" \
+        --tmpfs "/tmp:rw,noexec,nosuid,nodev,size=64m"
+}
+
+# STAGE 1 — fetch: egress, no /in, no vault/home/secrets, moves opaque bytes to /out/fetched.
+stage_fetch(){
+    local url="$1" out; out="$(absdir "$2")"
+    [ -n "$url" ] || die "fetch: empty url"
+    ensure_image
+    local -a argv=("$PODMAN" run)
+    mapfile -t -O "${#argv[@]}" argv < <(common_flags)
+    argv+=( -v "$out:/out" "$IMAGE" timeout "$TMO" /usr/local/bin/kd-ingest-fetch "$url" /out/fetched )
+    emit_or_run "${argv[@]}"
+}
+
+# STAGE 2 — process: NO network, /in read-only, /out writable, NOTHING else mounted (vault/home/
+# secrets ENOENT), env clean (podman passes no host env by default), one-shot, time+resource bound.
+stage_process(){
+    local in out; in="$(absdir "$1")"; out="$(absdir "$2")"
+    ensure_image
+    local -a argv=("$PODMAN" run)
+    mapfile -t -O "${#argv[@]}" argv < <(common_flags)
+    argv+=( --network=none -v "$in:/in:ro" -v "$out:/out" "$IMAGE"
+            timeout "$TMO" /usr/local/bin/kd-ingest-process /in /out )
+    emit_or_run "${argv[@]}"
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    fetch)   [ $# -eq 2 ] || die "usage: kd-ingest fetch <url> <outdir>";   stage_fetch   "$1" "$2" ;;
+    process) [ $# -eq 2 ] || die "usage: kd-ingest process <indir> <outdir>"; stage_process "$1" "$2" ;;
+    run)
+        [ $# -eq 2 ] || die "usage: kd-ingest run <url> <outdir>"
+        url="$1"; out="$(absdir "$2")"
+        # the pipeline: fetch into a private scratch dir, then process that scratch into <out>.
+        # (Under DRYRUN both stages' argv print, so the contract of the whole pipeline is assertable.)
+        if [ "${KD_INGEST_DRYRUN:-0}" = 1 ]; then
+            stage_fetch "$url" "$out"; stage_process "$out" "$out"; exit 0
+        fi
+        scratch="$(mktemp -d "${TMPDIR:-/tmp}/kd-ingest.XXXXXX")"
+        trap 'rm -rf "$scratch"' EXIT
+        stage_fetch "$url" "$scratch" || die "fetch stage failed"
+        stage_process "$scratch" "$out" || die "process stage failed"
+        ;;
+    ""|-h|--help) echo "usage: kd-ingest {fetch <url> <outdir>|process <indir> <outdir>|run <url> <outdir>}" ;;
+    *) die "unknown subcommand: $cmd" ;;
+esac

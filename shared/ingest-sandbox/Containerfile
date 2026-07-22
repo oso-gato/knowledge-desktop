@@ -1,0 +1,26 @@
+# kd-ingest-sandbox (WP-18, E5) — the untrusted-content ingest sandbox image.
+#
+# A minimal, credential-free, vault-free image that runs BOTH ingest stages (kd-ingest picks the
+# containment flags; the image just carries the tools + the two stage scripts). It holds NOTHING
+# sensitive: no roster, no secret, no vault, no user data — those are never built in (E1) and never
+# mounted at run time (E5). Provenance N1: stock Fedora, digest-pinned, weak-deps off (N2).
+#
+# [ADJ-17]: production delivers this as a CI-built, digest-pinned OCI archive `podman load`ed into
+# each user's nested store at provision (no first-use registry pull; gate-fence has no egress). MVP
+# builds it from this Containerfile; the archive-bake + per-user load ride host-gate (V27).
+ARG FEDORA_DIGEST=sha256:dde4f63cf8b0f57ffb62fe16b32ced482d17a9a0ea97f8f532caf387a108afc2
+FROM registry.fedoraproject.org/fedora@${FEDORA_DIGEST}
+
+# curl-minimal = stage-1 opaque-byte mover; python3 = stage-2 offline HTML->text parser (stdlib only,
+# no network, no third-party parser); coreutils = the in-sandbox `timeout` wall-clock bound. Nothing
+# else — a document that escapes the parser finds an almost empty toolbox (N2).
+RUN dnf -y install --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
+        curl-minimal python3 coreutils \
+    && dnf clean all && rm -rf /var/cache/dnf
+
+COPY kd-ingest-fetch kd-ingest-process /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/kd-ingest-fetch /usr/local/bin/kd-ingest-process
+
+# The stage scripts read only their argv + files under /in|/out. No ENTRYPOINT: kd-ingest always
+# supplies the exact `timeout <T> /usr/local/bin/kd-ingest-<stage> ...` command, so nothing runs by
+# default and the invocation is fully explicit (assertable).
