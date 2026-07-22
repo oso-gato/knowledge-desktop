@@ -46,7 +46,7 @@ if [ "$(id -u)" = 0 ]; then
     if [ "${1:-}" = apply-user ] && [ -n "${2:-}" ] && [ -r "${KD_STATE:-/var/lib/kd}/grants/${2}" ]; then
         KD_TILES="$(cat "${KD_STATE:-/var/lib/kd}/grants/${2}")"
     fi
-    exec runuser -u kdweb -- env KD_TILES="$KD_TILES" "$0" "$@"
+    exec runuser -u kdweb -- env KD_TILES="$KD_TILES" KD_DESKTOP_PROTOCOL="${KD_DESKTOP_PROTOCOL:-}" "$0" "$@"
 fi
 PGHOST="${KD_PGHOST:-/run/postgresql}"     # a directory ⇒ unix socket ⇒ peer auth
 PGDATABASE="${KD_PGDATABASE:-guacamole_db}"
@@ -98,19 +98,64 @@ ON CONFLICT (entity_id) DO UPDATE SET
 SQL
     echo "kd-web-sync: applied web identity for $user"
 
-    # ---- WP-11: the L1 desktop TILE (uid present => upsert the VNC connection row) ----
+    # ---- WP-11: the per-user desktop TILE (uid present) — LINEAGE-AWARE transport ----
+    # ONE root-level connection per user, name-keyed `${user}-desktop`, params fully refreshed
+    # (idempotent — the row set IS the contract), READ-granted to that user's entity ONLY (A9/A12).
+    # KD_DESKTOP_PROTOCOL selects the door (default vnc = Lineage 2 / xrdp, backward-compat; the
+    # Lineage 1 / grd web sidecar sets it to rdp). A deployment is a SINGLE lineage (the web sidecar
+    # is per-lineage, [ADJ-34]), so a user's tile protocol never changes under it.
+    #   L2 vnc: guac VNC → the user's x0vncserver on 5900+off; stores the derived first-8 VNC form
+    #           (at rest: E6 R7), 32bpp.
+    #   L1 rdp: guac RDP → grd on 3389+off with GUAC_USERNAME/GUAC_PASSWORD TOKEN PASSTHROUGH — the
+    #           web door stores NO desktop password (A12: the user's guac login IS their grd
+    #           credential, re-resolved at the door; WP-04 V1 GO). guac's client is the vendored
+    #           FreeRDP 3.14 (no experimental AV1 — WP-04 finding); security=nla (grd is CredSSP),
+    #           ignore-cert (self-signed loopback), and conservative visual params for grd's
+    #           llvmpipe software-rendered session. The live paint/stability proof is COJOIN-tier.
     if [ -n "$uid" ]; then
-        port=$((5900 + uid - 2000))          # doors-agent serves the SAME arithmetic ([ADJ-34] loopback)
-        vnc8="${phrase:0:8}"                 # the A13 first-8 derivation (at rest: E6 R7)
-        vnc8_sql="${vnc8//\'/\'\'}"          # phrase charset is [a-z0-9-], but belt the quote anyway
         conn="${user}-desktop"
-        psql_q <<SQL
--- one root-level connection per user, name-keyed; parent stays NULL (root group)
+        proto="${KD_DESKTOP_PROTOCOL:-vnc}"
+        if [ "$proto" = rdp ]; then
+            port=$((3389 + uid - 2000))
+            gu='${GUAC_USERNAME}'; gp='${GUAC_PASSWORD}'   # LITERAL guac tokens — no bash expansion
+            psql_q <<SQL
+INSERT INTO guacamole_connection (connection_name, protocol)
+SELECT '$conn', 'rdp'
+WHERE NOT EXISTS (SELECT 1 FROM guacamole_connection
+                  WHERE connection_name='$conn' AND parent_id IS NULL);
+DELETE FROM guacamole_connection_parameter
+ WHERE connection_id = (SELECT connection_id FROM guacamole_connection
+                        WHERE connection_name='$conn' AND parent_id IS NULL);
+INSERT INTO guacamole_connection_parameter (connection_id, parameter_name, parameter_value)
+SELECT c.connection_id, p.name, p.value
+FROM (SELECT connection_id FROM guacamole_connection
+      WHERE connection_name='$conn' AND parent_id IS NULL) c,
+     (VALUES ('hostname','127.0.0.1'),
+             ('port','$port'),
+             ('username','$gu'),
+             ('password','$gp'),
+             ('security','nla'),
+             ('ignore-cert','true'),
+             ('enable-wallpaper','false'),
+             ('enable-theming','false'),
+             ('enable-full-window-drag','false'),
+             ('enable-desktop-composition','false'),
+             ('enable-menu-animations','false')) AS p(name, value);
+INSERT INTO guacamole_connection_permission (entity_id, connection_id, permission)
+SELECT $eid, connection_id, 'READ'
+FROM guacamole_connection WHERE connection_name='$conn' AND parent_id IS NULL
+ON CONFLICT DO NOTHING;
+SQL
+            echo "kd-web-sync: applied desktop tile for $user (rdp 127.0.0.1:$port, token passthrough)"
+        else
+            port=$((5900 + uid - 2000))      # doors-agent serves the SAME arithmetic ([ADJ-34] loopback)
+            vnc8="${phrase:0:8}"             # the A13 first-8 derivation (at rest: E6 R7)
+            vnc8_sql="${vnc8//\'/\'\'}"      # phrase charset is [a-z0-9-], but belt the quote anyway
+            psql_q <<SQL
 INSERT INTO guacamole_connection (connection_name, protocol)
 SELECT '$conn', 'vnc'
 WHERE NOT EXISTS (SELECT 1 FROM guacamole_connection
                   WHERE connection_name='$conn' AND parent_id IS NULL);
--- parameters: full refresh (idempotent; the row set IS the contract)
 DELETE FROM guacamole_connection_parameter
  WHERE connection_id = (SELECT connection_id FROM guacamole_connection
                         WHERE connection_name='$conn' AND parent_id IS NULL);
@@ -122,13 +167,13 @@ FROM (SELECT connection_id FROM guacamole_connection
              ('port','$port'),
              ('password','$vnc8_sql'),
              ('color-depth','32')) AS p(name, value);
--- visibility: READ for THIS user's entity only (A9/A12 — each user sees exactly their own tile)
 INSERT INTO guacamole_connection_permission (entity_id, connection_id, permission)
 SELECT $eid, connection_id, 'READ'
 FROM guacamole_connection WHERE connection_name='$conn' AND parent_id IS NULL
 ON CONFLICT DO NOTHING;
 SQL
-        echo "kd-web-sync: applied desktop tile for $user (vnc 127.0.0.1:$port, 32bpp)"
+            echo "kd-web-sync: applied desktop tile for $user (vnc 127.0.0.1:$port, 32bpp)"
+        fi
     fi
 
     # ---- WP-14: FLEET TILES (A10) — one guac SSH connection per GRANTED endpoint ----
