@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""kd-ingest-process (WP-18, E5 stage 2) — INSIDE the sandbox, under --network=none.
+
+Parses the opaque bytes stage 1 fetched and writes a clean, plain-text rendering for the wiki. It
+runs with NO network, NO credentials, and NO vault/home (kd-ingest mounts ONLY /in read-only + /out;
+everything else is ENOENT) — so a malicious document can reach nothing and corrupt nothing. One-shot,
+resource + time bounded by the container.
+
+The parser is a DELIBERATELY minimal, stdlib-only, offline HTML->text extractor (a placeholder per
+H1 — no specific toolset is a requirement; containment is). No third-party parser, no network fetch
+of sub-resources, no code execution. Deterministic: same input -> same output.
+
+Args: <indir> <outdir>   — every regular file directly under <indir> is rendered to <outdir>/<name>.txt
+"""
+import html
+import os
+import sys
+from html.parser import HTMLParser
+
+_DROP = {"script", "style", "head", "noscript", "template"}
+_BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+          "section", "article", "header", "footer", "table", "ul", "ol", "pre"}
+
+
+class _Text(HTMLParser):
+    """Collect visible text; drop script/style; insert newlines at block boundaries."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _DROP:
+            self._skip += 1
+        elif tag in _BLOCK:
+            self.out.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in _DROP and self._skip:
+            self._skip -= 1
+        elif tag in _BLOCK:
+            self.out.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip:
+            self.out.append(data)
+
+    def text(self):
+        # collapse runs of blank lines + trailing whitespace; stable output
+        lines = [ln.rstrip() for ln in "".join(self.out).splitlines()]
+        cleaned, blank = [], False
+        for ln in lines:
+            if ln:
+                cleaned.append(ln); blank = False
+            elif not blank:
+                cleaned.append(""); blank = True
+        return "\n".join(cleaned).strip() + "\n"
+
+
+def render(raw: bytes) -> str:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1", errors="replace")
+    p = _Text()
+    p.feed(text)
+    # normalize the non-breaking space (&nbsp; -> U+00A0) to a plain space so the wiki text is clean
+    # and predictable; deterministic
+    return html.unescape(p.text()).replace("\xa0", " ")
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit("usage: kd-ingest-process <indir> <outdir>")
+    indir, outdir = sys.argv[1], sys.argv[2]
+    os.makedirs(outdir, exist_ok=True)
+    n = 0
+    for name in sorted(os.listdir(indir)):
+        src = os.path.join(indir, name)
+        if not os.path.isfile(src):
+            continue
+        with open(src, "rb") as f:
+            rendered = render(f.read())
+        dst = os.path.join(outdir, name + ".txt")
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(rendered)
+        n += 1
+    print(f"kd-ingest-process: rendered {n} file(s)", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -154,15 +154,20 @@ COPY gate/probe/kd-vnc-check        /usr/libexec/kd/kd-vnc-check
 COPY gate/probe/kd-rdp-check        /usr/libexec/kd/kd-rdp-check
 COPY gate/probe/kd-isolation-check  /usr/libexec/kd/kd-isolation-check
 COPY gate/probe/kd-secrets-scan     /usr/libexec/kd/kd-secrets-scan
+# E5 ingest (WP-18): the user-facing CLI on PATH + the sandbox recipe (CI builds the [ADJ-17] OCI
+# archive FROM this dir; provision podman-loads it per user). No secret/vault ever built in (E1).
+COPY shared/kd-ingest               /usr/local/bin/kd-ingest
+COPY shared/ingest-sandbox/         /usr/local/share/kd-ingest-sandbox/
 # WP-12 (C4): the kd-geometry oracle (X11 path — reads Screen 0 current via xrandr)
 COPY shared/kd-geometry             /usr/local/bin/kd-geometry
-RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health /usr/local/bin/kd-geometry \
+RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health /usr/local/bin/kd-ingest /usr/local/bin/kd-geometry \
         /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
         /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check /usr/libexec/kd/kd-rdp-check \
         /usr/libexec/kd/kd-isolation-check \
         /usr/libexec/kd/kd-secrets-scan \
         /usr/libexec/kd/kd-vault-sync /usr/libexec/kd/kd-vault-init /usr/libexec/kd/kd-vault-driver \
+        /usr/local/share/kd-ingest-sandbox/kd-ingest-fetch /usr/local/share/kd-ingest-sandbox/kd-ingest-process \
     && chmod 0644 /usr/libexec/kd/kd-vault-gitignore
 
 ENTRYPOINT ["/usr/local/bin/kd-entrypoint"]

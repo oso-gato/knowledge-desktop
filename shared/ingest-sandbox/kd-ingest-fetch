@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# kd-ingest-fetch (WP-18, E5 stage 1) — INSIDE the sandbox. Moves OPAQUE BYTES from a URL to a file.
+# It NEVER parses, interprets, or executes what it fetches — that is stage 2's job, under no network.
+# This runs in a hardened container (kd-ingest sets --cap-drop=ALL --read-only --tmpfs /tmp, resource
+# + time bound); it has egress and NOTHING sensitive (no vault/home/secrets are mounted).
+#
+# Args: <url> <outfile>
+set -euo pipefail
+url="${1:?url}"; out="${2:?outfile}"
+
+# https only, bounded size, no redirects to other schemes, no netrc/config, silent. `--output` to a
+# file — the bytes are never even printed, let alone parsed. curl is the ONLY thing that touches the
+# untrusted endpoint; its output is opaque to us.
+exec curl \
+    --proto '=https' --proto-redir '=https' \
+    --location --max-redirs 5 \
+    --max-filesize 104857600 \
+    --max-time "${KD_FETCH_MAXTIME:-45}" \
+    --silent --show-error --fail \
+    --disable \
+    --output "$out" \
+    -- "$url"
