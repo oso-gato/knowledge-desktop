@@ -108,8 +108,12 @@ HEALTH_SLEEP_grd="6"
 # Caddy(TLS) -> Tomcat -> webapp servlet (200, zero auth failures — never self-bans, A4/WD-#11;
 # /api/languages serves classpath resources, so it proves NOTHING about the DB); (2) a real
 # `SELECT 1` on guacamole_db over the unix socket proves postgres answers queries. The live
-# per-user TOTP round-trip (A3/A4/A11) is a MANUAL/browser tier above the gate (disclosed E6)
-# — not asserted here.
+# per-user login proof: (3) WP-20 kd-web-authcheck asserts the LIVE credential + MANDATORY-2FA
+# auth-chain on the one public door — a valid phrase draws the second-factor challenge with NO token
+# (un-bypassable 2FA, A3/A12/A13; a token here would be a 2FA BYPASS), a wrong phrase is cleanly
+# rejected (A5); rc-exact so a connection error never passes. STILL above the gate (disclosed E6):
+# A4 multi-source lockout (the lockout-a4 probe), COMPLETING the second factor (a real TOTP -> token,
+# needs an enrolled secret + a phone) and A11 same-session paint — all rehearsal/COJOIN tier.
 CFILE_web="lineage-web/Containerfile"
 SECRET_MOUNT_web="/run/secrets/kd-roster"
 SECRET_ENV_web='{"version":1,"box":{"tailnet_authkey":"tskey-fixture-not-a-real-key","endpoints":{"erebus":{"host":"erebus.tail.fixture","port":22,"user":"core"},"fedora-dev":{"host":"fedora-dev.tail.fixture","port":22,"user":"core"}},"shared_folder":true},"admin":{"username":"kadm","password":"adm-aaaa-0000","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYadm fixture@kd"],"tiles":["erebus","fedora-dev"]},"workers":[{"username":"gw1","password":"gw1-bbbb-1111","ssh_authorized_keys":["ssh-ed25519 AAAAfixtureKEYgw1 fixture@kd"],"tiles":["erebus"]},{"username":"gw2","password":"gw2-cccc-2222"},{"username":"gw3","password":"not-the-a13-shape-at-all"},{"username":"gw1","password":"dup-dddd-3333"},{"username":"root","password":"sys-eeee-4444"},{"username":"gw4","password":"gw4-ffff-5555","color":"mauve"},{"username":"gw5","password":"gw5-gggg-6666","tiles":["mars"]}]}'
@@ -138,7 +142,7 @@ HEALTH_web='kd-health'
 # No SQL string literals / single quotes (the value is single-quote-delimited + bash-exec'd in the
 # candidate): the connection_name substrings "desktop" and "tile-" are non-overlapping, so grep -c
 # on the name list is an exact, quote-free census.
-PROBE_web='kd-health && names=$(runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select connection_name from guacamole_connection") && test $(printf "%s\n" "$names" | grep -c desktop) = 3 && test $(printf "%s\n" "$names" | grep -c tile-) = 3 || { echo =run-kd: ; ls -la /run/kd 2>&1 ; echo =web-users: ; runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select e.name from guacamole_user u join guacamole_entity e on u.entity_id=e.entity_id" 2>&1 ; echo =conns: ; runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select protocol,connection_name from guacamole_connection order by 1,2" 2>&1 ; echo =tomcat-tail: ; tail -12 /run/kd/tomcat.log 2>&1 ; exit 1 ; }'
+PROBE_web='kd-health && names=$(runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select connection_name from guacamole_connection") && test $(printf "%s\n" "$names" | grep -c desktop) = 3 && test $(printf "%s\n" "$names" | grep -c tile-) = 3 && /usr/libexec/kd/kd-web-authcheck gw1 gw1-bbbb-1111 || { echo =run-kd: ; ls -la /run/kd 2>&1 ; echo =authcheck: ; /usr/libexec/kd/kd-web-authcheck gw1 gw1-bbbb-1111 2>&1 | tail -6 ; echo =web-users: ; runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select e.name from guacamole_user u join guacamole_entity e on u.entity_id=e.entity_id" 2>&1 ; echo =conns: ; runuser -u kdweb -- psql -h /run/postgresql -d guacamole_db -qtAX -c "select protocol,connection_name from guacamole_connection order by 1,2" 2>&1 ; echo =tomcat-tail: ; tail -12 /run/kd/tomcat.log 2>&1 ; exit 1 ; }'
 # First boot runs initdb + guac schema load + Tomcat webapp expansion (genuinely slow on the
 # shared-vCPU host): 30×6 = 180s budget, well past the ~60-90s real first boot (F2 — a slow first
 # boot must never read as unhealthy; the grd lesson: budget must exceed the real first boot).

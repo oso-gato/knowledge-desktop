@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+# kd-web-authcheck <user> <good_phrase> [host=127.0.0.1] [port=443]  (WP-20 gate probe; V9 slice) —
+# proves the ONE PUBLIC door's LIVE credential + MANDATORY-second-factor auth-chain at the gate,
+# closing the 00-REQUIREMENTS.md §6.2 clause "a real authentication round-trip proves the
+# credential+second-factor chain live (valid credentials draw a second-factor challenge; invalid
+# are rejected)" (A3/A5/A12/A13). Until now the gate asserted only the DB tile COUNT; kd-web-sync's
+# own header flagged the live round-trip as "NOT gate-asserted ... manual/browser tier".
+#
+# Baked into the web image at /usr/libexec/kd/ and invoked by .live-gate PROBE_web INSIDE the fenced
+# candidate, where Caddy:443 -> Tomcat:8080 (guacamole webapp, jdbc+totp+ban extensions loaded) is
+# live on loopback. Mirrors the kd-vnc-check/kd-vnc-login discipline: a REAL protocol round-trip,
+# RC-EXACT so a connection error can NEVER masquerade as a pass.
+#
+#   valid phrase  -> CHALLENGE : the guac auth chain VERIFIED the password (salted-SHA256, jdbc) and
+#                                then DEMANDED the TOTP second factor, issuing NO token. This is the
+#                                A3 proof: the second factor is MANDATORY and un-bypassable. A TOKEN
+#                                here = 2FA BYPASS (fail); a REJECT = the valid credential was
+#                                refused (fail). Holds whether the fixture user is TOTP-enrolled
+#                                (verification challenge) or not (enrollment challenge) — either way
+#                                no token is issued without completing the second factor.
+#   wrong phrase  -> REJECT    : refused at the CREDENTIALS stage (INVALID_CREDENTIALS) — never
+#                                reaches the 2FA stage, never a token. The A5 proof.
+#
+#   exit 0 = the matrix held GREEN
+#   exit 1 = a leg FAILED its expected classification (a real gate RED; self-diagnosing to stderr)
+#   exit 2 = usage error, or the door was UNREACHABLE (never a pass)
+#
+# SCOPE (N4-honest): this asserts the auth-CHAIN up to the mandatory-2FA gate. COMPLETING the second
+# factor (a correct TOTP -> token) needs an enrolled secret and is the dress-rehearsal tier (a phone,
+# §6.4); the A4 multi-source ban is the sibling lockout-a4 probe. NO secret is seeded (E1 + the A3
+# self-enroll guard stay intact) — the phrase is a gate ROSTER-FIXTURE value, never production.
+#
+# A4 SELF-BAN GUARD: the VALID leg runs FIRST, then exactly ONE wrong attempt (1 < the loaded
+# ban-max-invalid-attempts:5), so the loopback source is never banned mid-probe (Caddy pins
+# X-Forwarded-For to the real remote_host, so the ban keys on this one loopback source).
+import sys, ssl, json, urllib.request, urllib.parse, urllib.error
+
+
+def post_tokens(host, port, user, password):
+    """POST username/password to /guacamole/api/tokens; return (http_status, body_text).
+    A guac auth failure is an HTTPError (403) whose BODY carries the type we classify on."""
+    url = "https://%s:%d/guacamole/api/tokens" % (host, port)
+    data = urllib.parse.urlencode({"username": user, "password": password}).encode()
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE          # the gate ships `tls internal` self-signed (Caddyfile)
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+
+
+def classify(status, body):
+    """TOKEN | CHALLENGE | REJECT | UNKNOWN from a guac /api/tokens response.
+    - TOKEN     : 200 + an authToken was issued (login complete).
+    - CHALLENGE : the auth chain wants MORE credentials — guac raises INSUFFICIENT_CREDENTIALS and
+                  lists a `guac-totp-*` field to supply (verification OR enrollment). Mandatory 2FA.
+    - REJECT    : the credentials were refused (INVALID_CREDENTIALS / PERMISSION_DENIED), no token,
+                  no TOTP field — the password never advanced to the 2FA stage.
+    - UNKNOWN   : none of the above (a RED; never a pass)."""
+    try:
+        j = json.loads(body)
+    except Exception:
+        j = {}
+    low = body.lower()
+    typ = (j.get("type") or "").upper() if isinstance(j, dict) else ""
+    if status == 200 and isinstance(j, dict) and j.get("authToken"):
+        return "TOKEN"
+    # mandatory second factor: guac demands an additional guac-totp credential before any token
+    if typ == "INSUFFICIENT_CREDENTIALS" or "guac-totp" in low:
+        return "CHALLENGE"
+    # password refused at the credentials stage
+    if typ in ("INVALID_CREDENTIALS", "PERMISSION_DENIED"):
+        return "REJECT"
+    # a 401/403 with neither a token nor a TOTP field is still a refusal, not an accept
+    if status in (401, 403) and "authtoken" not in low and "guac-totp" not in low:
+        return "REJECT"
+    return "UNKNOWN"
+
+
+def main():
+    a = sys.argv[1:]
+    if not (2 <= len(a) <= 4):
+        print("usage: kd-web-authcheck <user> <good_phrase> [host] [port]", file=sys.stderr)
+        return 2
+    user, good = a[0], a[1]
+    host = a[2] if len(a) >= 3 else "127.0.0.1"
+    port = int(a[3]) if len(a) >= 4 else 443
+    wrong = good + "-WRONG"          # NOT this user's credential (same user, bad password)
+
+    diag = []
+
+    def attempt(label, password):
+        try:
+            st, body = post_tokens(host, port, user, password)
+        except Exception as e:                       # connect/TLS error — never a pass (rc 2)
+            print("kd-web-authcheck: door UNREACHABLE on %s leg (%s:%d): %s"
+                  % (label, host, port, e), file=sys.stderr)
+            sys.exit(2)
+        cl = classify(st, body)
+        diag.append((label, st, cl, body))
+        return cl
+
+    def dump(msg):
+        print("kd-web-authcheck: %s" % msg, file=sys.stderr)
+        for label, st, cl, body in diag:
+            print("  [%s] http=%s class=%s body=%s" % (label, st, cl, body[:400]), file=sys.stderr)
+
+    # Leg A FIRST (A4 self-ban guard): a valid credential MUST draw the mandatory second factor.
+    if attempt("valid", good) != "CHALLENGE":
+        dump("A3 BROKEN on :%d — a VALID credential did not draw the mandatory second factor "
+             "(a TOKEN = 2FA BYPASS; a REJECT = the valid credential was refused)" % port)
+        return 1
+    # Leg B: a wrong credential MUST be cleanly rejected (never a token, never a 2FA challenge).
+    if attempt("wrong", wrong) != "REJECT":
+        dump("A5 BROKEN on :%d — a WRONG credential was not cleanly rejected" % port)
+        return 1
+
+    print("kd-web-authcheck: %s@%s:%d auth-chain GREEN — valid->mandatory-2FA-challenge, "
+          "wrong->reject (A3/A5/A12/A13, rc-exact)" % (user, host, port))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
