@@ -78,6 +78,36 @@ if [ -n "$quadlets" ]; then
     [ -z "$dup" ] || err "F4: duplicate PublishPort across quadlets: $dup"
     vols=$(grep -h '^Volume=' $quadlets | cut -d: -f1 | sort); dupv=$(echo "$vols" | uniq -d)
     [ -z "$dupv" ] || err "F4: duplicate Volume across quadlets: $dupv"
+
+    # A2 (C6 — public-surface, BY CONSTRUCTION): podman exposes ONLY PublishPort'd ports to the
+    # host/public interface; a container-internal listener (RDP 3389-3391, VNC 5900-5902, SSH 22,
+    # the fleet-tile backends) is unreachable from outside unless a quadlet publishes it. So proving
+    # the DEPLOY CONTRACT publishes EXACTLY the one web door and NEVER a private door IS the static
+    # A2 guarantee — "exactly one endpoint (the web door over HTTPS) reachable from the public
+    # internet, every other listener absent". (The live in-candidate listener census — that no ROGUE
+    # listener appeared at runtime — is the separate kd-surface-scan probe; this is the by-design
+    # half, and unlike a runtime probe it holds for the REAL production deploy contract.) F4's
+    # disjointness above only proves the published ports differ across lineages; it never constrained
+    # WHICH ports, so a stray `PublishPort=3389:3389` would have passed it. This closes that.
+    #   (a) every PublishPort's CONTAINER-side port is 443 — the ONE public door (the Caddy web door)
+    #   (b) neither side of any PublishPort is a private door port (RDP 3389-3391 / VNC 5900-5902 / SSH 22)
+    #   (c) a netns-JOINED sidecar (Network=<owner>.container) publishes NOTHING — the netns OWNER
+    #       declares the door (podman forbids PublishPort on a joined netns; assert the design contract)
+    private_ports='3389 3390 3391 5900 5901 5902 22'
+    for q in $quadlets; do
+        joined=""; grep -qE '^Network=[^=]+\.container$' "$q" && joined=1
+        while IFS= read -r pp; do
+            [ -n "$pp" ] || continue
+            spec="${pp#PublishPort=}"
+            # ports are the last two colon-separated fields (an optional leading host-IP is ignored)
+            cport="${spec##*:}"; rest="${spec%:*}"; hport="${rest##*:}"
+            [ "$cport" = 443 ] || err "A2: $q publishes container port $cport — the only public endpoint is 443 (the web door)"
+            for pv in $private_ports; do
+                case " $hport $cport " in *" $pv "*) err "A2: $q PublishPort=$spec exposes private door port $pv to the public surface";; esac
+            done
+            [ -z "$joined" ] || err "A2: $q joins a netns (Network=*.container) yet declares PublishPort=$spec — only the netns OWNER may publish (podman forbids this)"
+        done < <(grep '^PublishPort=' "$q")
+    done
     for q in $quadlets; do
         grep -q '^Secret=kd-roster' "$q" || err "$q: missing Secret=kd-roster line (drift vs SECRETS.md)"
     done
