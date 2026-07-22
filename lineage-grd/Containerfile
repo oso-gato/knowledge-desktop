@@ -189,8 +189,10 @@ RUN set -e \
 # CHURN-LATE: repo-owned glue (shared provisioning + the L2 hooks + the reused VNC probes).
 # NOT copied: the Lineage-2 (XRDP) session glue (entrypoint-l1.sh, startwm-kd, doors-agent,
 # xorg.conf, shared/kd-health [xrdp-hardcoded — this lineage's kd-health is its own file],
-# kd-vault-driver) AND the VNC probe tools (kd-vnc-login/kd-vnc-check) — this primary lineage
+# kd-vault-driver) AND the VNC RFB probe tools (kd-vnc-login/kd-vnc-check) — this primary lineage
 # serves NO native VNC (DESIGN §2 note (j): grd VNC disabled), so the RFB probe has no door to test.
+# COPIED (unlike the VNC probes): kd-rdp-check — RDP is grd's native + ONLY door (per-user 3389/3390/
+# 3391), so the C2 protocol-handshake proof (§6.2) runs here.
 # DEFERRED: the vault trio (kd-vault-sync/init/gitignore) rides the WP-17 half (the per-user timer).
 COPY shared/kd-provision            /usr/libexec/kd/kd-provision
 COPY lineage-grd/kd-cred            /usr/libexec/kd/kd-cred
@@ -198,12 +200,14 @@ COPY lineage-grd/kd-session-enable  /usr/libexec/kd/kd-session-enable
 COPY lineage-grd/kd-health          /usr/local/bin/kd-health
 COPY shared/kd-agent-env            /usr/libexec/kd/kd-agent-env
 COPY shared/kd-agent-run            /usr/libexec/kd/kd-agent-run
+COPY gate/probe/kd-rdp-check        /usr/libexec/kd/kd-rdp-check
 # WP-12 (C4): the geometry-governor + the kd-geometry oracle (both python3-gi; python3-gobject dep)
 COPY lineage-grd/geometry-governor  /usr/libexec/kd/geometry-governor
 COPY shared/kd-geometry             /usr/local/bin/kd-geometry
 RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/local/bin/kd-health \
         /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run \
+        /usr/libexec/kd/kd-rdp-check \
         /usr/libexec/kd/geometry-governor /usr/local/bin/kd-geometry
 
 ENTRYPOINT ["/sbin/init"]

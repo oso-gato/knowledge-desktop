@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+# kd-rdp-check (WP-20; gate probe; C2/A2) — a stdlib-only RDP X.224 handshake prober. Proves the RDP
+# door answers a REAL PROTOCOL HANDSHAKE, not merely an open TCP port: connect -> send a TPKT-framed
+# X.224 Connection Request (CR) carrying an RDP Negotiation Request -> read + VALIDATE the server's
+# X.224 Connection Confirm (CC). A bare/dumb TCP listener — which the retired `exec 3<>/dev/tcp`
+# connect passed IDENTICALLY to a real server — FAILS here (it accepts the socket but speaks no
+# X.224 CC). This closes the 00-REQUIREMENTS §6.2 clause "RDP ... answer a real protocol handshake"
+# for the grd lineage (its native + only door, ports 3389/3390/3391) and the xrdp lineage (:3389).
+#
+# SCOPE (N4 honesty): the X.224 negotiation PRECEDES authentication, so NO credential is exchanged —
+# this proves the door speaks the RDP PROTOCOL, NOT per-user identity. The A12/A13 per-user RDP
+# identity round-trip (own phrase attaches, cross-user rejected) is a separate, deferred proof at the
+# NLA/CredSSP tier; do not read a GREEN here as an identity proof. On the tailnet-interface leg of
+# §6.2 (probe hits 127.0.0.1, not a tailnet iface), see DESIGN §7 [ADJ-33]/V7 — the fenced-headscale
+# real-interface harness is host-gate territory; this probe closes the protocol-vs-bare-TCP leg.
+#
+#   kd-rdp-check <host> <port>
+#     exit 0  -> the door returned a well-formed X.224 Connection Confirm (it speaks RDP)
+#     exit 1  -> the socket opened but NO valid X.224 CC came back (a bare listener / not an RDP door)
+#     exit 2  -> could not connect at all — distinct, so a connection error never masquerades as a
+#                clean "not-RDP" (the rc-exact discipline of kd-vnc-login)
+#
+# The image ships NO fixture values; the .live-gate PROBE supplies host+port. No secret rides argv.
+import socket, sys, struct
+
+
+def build_cr():
+    # RDP Negotiation Request [MS-RDPBCGR 2.2.1.1.1], 8 bytes, requesting PROTOCOL_SSL|PROTOCOL_HYBRID
+    # (0x00000003): a modern server replies rdpNegRsp(selectedProtocol) OR rdpNegFailure — BOTH are
+    # valid X.224 CCs (the door spoke RDP), which is all C2 asserts. type=0x01 flags=0x00
+    # length=0x0008(LE) requestedProtocols=0x00000003(LE).
+    neg = struct.pack("<BBHI", 0x01, 0x00, 0x0008, 0x00000003)
+    # X.224 Connection Request [MS-RDPBCGR 2.2.1.1]: CR-CDT=0xE0, DST-REF=0, SRC-REF=0, CLASS-OPTION=0,
+    # then the variable part (the rdpNegReq). LI counts every octet AFTER the LI byte.
+    x224 = struct.pack("!BHHB", 0xE0, 0x0000, 0x0000, 0x00) + neg
+    x224 = bytes([len(x224)]) + x224                     # prepend LI
+    # TPKT header [RFC1006]: version=0x03, reserved=0x00, length=total (BE, incl. the 4-byte header).
+    # The resulting 19-byte packet is the canonical RDP negotiation probe.
+    return struct.pack("!BBH", 0x03, 0x00, 4 + len(x224)) + x224
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("usage: kd-rdp-check <host> <port>", file=sys.stderr)
+        return 2
+    host, port = sys.argv[1], int(sys.argv[2])
+    try:
+        s = socket.create_connection((host, port), timeout=8)
+        s.settimeout(8)
+    except Exception as e:
+        # Could not connect at all (refused / no route / timeout). Distinct rc: a connection error is
+        # never reported as a clean "not-RDP", so a down door can't be confused with a wrong service.
+        print("kd-rdp-check: CONN ERROR to %s:%d: %s" % (host, port, e), file=sys.stderr)
+        return 2
+    try:
+        s.sendall(build_cr())
+
+        def r(n):
+            buf = b""
+            while len(buf) < n:
+                c = s.recv(n - len(buf))
+                if not c:
+                    break
+                buf += c
+            return buf
+
+        tpkt = r(4)
+        if len(tpkt) < 4 or tpkt[0] != 0x03:
+            print("kd-rdp-check: NOT RDP on %s:%d — no TPKT header (got %r); a bare listener, not an "
+                  "RDP door" % (host, port, tpkt), file=sys.stderr)
+            return 1
+        total = struct.unpack("!H", tpkt[2:4])[0]
+        if total < 7 or total > 65535:
+            print("kd-rdp-check: NOT RDP on %s:%d — implausible TPKT length %d" % (host, port, total),
+                  file=sys.stderr)
+            return 1
+        body = r(total - 4)
+        # X.224: body[0]=LI, body[1]=TPDU code. Connection Confirm = 0xD0 (test the high nibble; the
+        # low nibble is the credit field). A real RDP/X.224 server answers a CR with a CC; a dumb TCP
+        # listener answers with nothing (or a non-RDP banner) and fails here.
+        if len(body) < 2 or (body[1] & 0xF0) != 0xD0:
+            got = ("0x%02x" % body[1]) if len(body) >= 2 else "none"
+            print("kd-rdp-check: NOT RDP on %s:%d — no X.224 Connection Confirm (X.224 code %s)"
+                  % (host, port, got), file=sys.stderr)
+            print("kd-rdp-check:   raw reply: %s" % (tpkt + body).hex(), file=sys.stderr)
+            return 1
+        # Decode the optional rdpNegRsp/rdpNegFailure purely for an honest, self-describing GREEN line
+        # (not load-bearing: a Failure response still proves the door speaks RDP). Offsets: after the
+        # 7-byte fixed X.224 CC header, body[7]=type, body[11:15]=selectedProtocol/failureCode (LE).
+        detail = "plain CC"
+        if len(body) >= 15 and body[7] in (0x02, 0x03):
+            code = struct.unpack("<I", body[11:15])[0]
+            if body[7] == 0x02:
+                detail = "rdpNegRsp selectedProtocol=0x%08x" % code
+            else:
+                detail = "rdpNegFailure failureCode=0x%08x (still a valid CC — the door speaks RDP)" % code
+        print("kd-rdp-check: OK — %s:%d answered a real X.224 Connection Confirm (%s)" % (host, port, detail))
+        return 0
+    except Exception as e:
+        # Connected, but the handshake did not complete with a valid CC (reset / short read / garbage).
+        # The door was up but did not speak RDP -> rc 1 (not rc 2, which means "could not connect").
+        print("kd-rdp-check: PROTOCOL ERROR on %s:%d (connected, no valid CC): %s" % (host, port, e),
+              file=sys.stderr)
+        return 1
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())
