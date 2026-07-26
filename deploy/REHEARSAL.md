@@ -206,9 +206,23 @@ idealized PASS.
 ## 6. WP-22 delta — Strix (GPU host class, B4)
 
 Re-run the **byte-identical** quadlet on a `/dev/dri`-present host and, in addition to a full pass
-of §§1–5 with **behaviour identical to the Erebus baseline**, record the **GPU evidence chain**:
-- the per-user compositor selects a **GPU renderer** (not llvmpipe) — capture the renderer string;
-- `gpu_busy` / render-node activity rises under a painting session;
-- the compositor holds **open fds** on the render node.
+of §§1–5 with **behaviour identical to the Erebus baseline**, record the **GPU evidence chain** —
+the `kd-render-report` oracle reports it as three separable facts, so a failure names which link
+broke (V15):
+
+```sh
+# with gw1's desktop live and painting:
+podman exec kd-<lineage> kd-render-report --user gw1                 # the evidence report
+podman exec kd-<lineage> kd-render-report --user gw1 --require-gpu   # MUST exit 0 on Strix
+```
+- **PRESENT** — a render node exists (`render-nodes=/dev/dri/renderD*`);
+- **OPENABLE** — the *session user* can open it (`openable-by-user=yes`) — the GIDMap/render-gid
+  prereq; a `PRESENT-UNOPENABLE` verdict is exactly the case the **udev-rule fallback** exists for;
+- **HELD** — the user's live session holds an open fd on it (`held-by-session=…`, with the holder
+  pid/comm named) → `gpu=IN-USE`, the B4 evidence that the desktop is *demonstrably* using the GPU.
+
+**On the Erebus baseline the correct answer is `gpu=ABSENT` at rc 0** — do **not** pass
+`--require-gpu` there; a GPU-less host is not a fault. Also record `gpu_busy`/render-node activity
+rising under a painting session if the driver exposes it.
 Record the encode state and the **GIDMap-vs-udev** render-gid mapping decision (per setup.sh's
 render-gid note). A Strix PASS requires the GPU evidence AND parity with Erebus.

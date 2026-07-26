@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""kd-render-report (WP-12 ops oracle; B4/V15) — report HOW the desktop is rendering: on the GPU
+(a render node the session actually holds open) or in software. Lineage-agnostic, zero new deps.
+
+This is the WP-22 (Strix) GPU EVIDENCE oracle, and it answers V15's actual question — "does GIDMap
+render-gid mapping give WORKER-uid session processes an OPENABLE render node, and do they use it?"
+— in three separately-reported facts, so a failure says WHICH link broke:
+
+  1. PRESENT   — does the host expose a render node at all? (`AddDevice=-/dev/dri` is OPTIONAL: on
+                 the GPU-less Erebus baseline there is none, and that is CORRECT, not a fault.)
+  2. OPENABLE  — can the SESSION USER open it? (the GIDMap/render-gid prereq — V15's crux; a node
+                 that exists but is unopenable by uid 2001 is exactly the failure the udev-rule
+                 fallback exists for.)
+  3. HELD      — does that user's live session actually hold an open fd on it? (the difference
+                 between "a GPU is available" and "the desktop is demonstrably using it", B4.)
+
+  kd-render-report [--user <user>] [--require-gpu]
+
+  Default: REPORTS and exits 0 — on the GPU-less baseline `gpu=ABSENT` is the expected, correct
+  answer and must never read as a failure.
+  --require-gpu: ASSERT the full chain (exit 1 unless gpu=IN-USE). This is the WP-22/Strix switch;
+  never use it on the Erebus baseline.
+
+  exit 0 = reported (or asserted OK) · 1 = --require-gpu and the GPU is not in use · 2 = usage
+
+WHY NOT `glxinfo` (a zero-base correction to the DESIGN §17 sketch, which named a "glxinfo parser"):
+glx-utils is in NEITHER image, so it would be a new package (N2) — and on LINEAGE 1 it cannot work
+at all: that lineage is deliberately pure-Wayland with NO Xwayland (DESIGN §2), so there is no GLX
+to query. Render-node fds are readable from /proc on both lineages with nothing installed, and they
+are STRONGER evidence than a renderer string: a string says what a library chose, an open fd says
+the compositor really has the device.
+
+The parsers and the verdict logic are PURE and unit-tested in-box (shared/tests/kd-render-report.test.sh);
+reading a live session's fds is host-gate/rehearsal tier.
+"""
+import os
+import pwd
+import re
+import sys
+
+DRI_DIR = "/dev/dri"
+RENDER_RE = re.compile(r"^renderD\d+$")
+CARD_RE = re.compile(r"^card\d+$")
+
+
+# ------------------------------------------------------------------ pure helpers (unit-tested)
+def render_nodes(listing):
+    """From a /dev/dri directory listing return the RENDER nodes, sorted.
+
+    Only renderD* — the unprivileged render nodes. card* are the legacy/KMS master nodes; a
+    container that can open a render node can do GPU compute/rendering without them, and holding a
+    card node is not what B4 claims."""
+    return sorted("%s/%s" % (DRI_DIR, n) for n in listing if RENDER_RE.match(n))
+
+
+def held_nodes(fd_targets):
+    """From the symlink targets of a process's /proc/<pid>/fd/* return the render nodes it holds."""
+    return sorted({t for t in fd_targets if RENDER_RE.match(os.path.basename(t or ""))})
+
+
+def verdict(nodes, openable, held):
+    """Combine the three facts into ONE honest verdict token.
+
+    ABSENT is a legitimate, correct state (the GPU-less Erebus baseline) — never an error.
+    PRESENT-UNOPENABLE names the V15/GIDMap failure precisely so the udev fallback is actionable.
+    AVAILABLE-NOT-USED means the plumbing works but the desktop is still rendering in software."""
+    if not nodes:
+        return "ABSENT"                    # no render node on this host class (software rendering)
+    if held:
+        return "IN-USE"                    # the session holds the node — B4 evidence
+    if openable is False:
+        return "PRESENT-UNOPENABLE"        # V15: the render-gid mapping did NOT reach the user
+    return "AVAILABLE-NOT-USED"            # node openable, but nothing in the session holds it
+
+
+def format_report(user, nodes, openable, held, holders):
+    lines = ["user=%s" % user,
+             "render-nodes=%s" % (",".join(nodes) if nodes else "none"),
+             "openable-by-user=%s" % ("n/a" if not nodes else
+                                      {True: "yes", False: "no", None: "unknown"}[openable]),
+             "held-by-session=%s" % (",".join(held) if held else "no")]
+    for pid, comm, node in holders:
+        lines.append("  holder pid=%s comm=%s fd->%s" % (pid, comm, node))
+    lines.append("gpu=%s" % verdict(nodes, openable, held))
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ live inspection (host-gate)
+def _listing():
+    try:
+        return os.listdir(DRI_DIR)
+    except OSError:
+        return []
+
+
+def _can_open_as(user, node):
+    """Can `user` open the render node? Checked by uid/gid against the node's mode — the GIDMap
+    question — without needing to BE that user (the oracle usually runs as root from the gate or
+    the rehearsal). Returns True/False, or None if the user or node cannot be resolved."""
+    try:
+        pw = pwd.getpwnam(user)
+        st = os.stat(node)
+    except (KeyError, OSError):
+        return None
+    if st.st_mode & 0o006:                      # world rw (the udev-rule fallback path)
+        return True
+    if st.st_gid == pw.pw_gid and st.st_mode & 0o060:
+        return True
+    try:                                        # supplementary groups (the GIDMap render-gid path)
+        groups = os.getgrouplist(user, pw.pw_gid)
+    except (AttributeError, OSError):
+        groups = [pw.pw_gid]
+    if st.st_gid in groups and st.st_mode & 0o060:
+        return True
+    return bool(st.st_uid == pw.pw_uid and st.st_mode & 0o600)
+
+
+def _session_holders(user):
+    """Every process owned by `user` holding an open fd on a render node -> [(pid, comm, node)]."""
+    out = []
+    try:
+        uid = pwd.getpwnam(user).pw_uid
+    except KeyError:
+        return out
+    for pid in [p for p in os.listdir("/proc") if p.isdigit()]:
+        try:
+            if os.stat("/proc/%s" % pid).st_uid != uid:
+                continue
+            comm = open("/proc/%s/comm" % pid).read().strip()
+            fdir = "/proc/%s/fd" % pid
+            for fd in os.listdir(fdir):
+                try:
+                    tgt = os.readlink("%s/%s" % (fdir, fd))
+                except OSError:
+                    continue
+                if RENDER_RE.match(os.path.basename(tgt)):
+                    out.append((pid, comm, tgt))
+        except OSError:
+            continue                            # the process exited mid-walk, or is unreadable
+    return out
+
+
+def main():
+    a = sys.argv[1:]
+    if a and a[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    user, require = None, False
+    while a:
+        if a[0] == "--user" and len(a) >= 2:
+            user, a = a[1], a[2:]
+        elif a[0] == "--require-gpu":
+            require, a = True, a[1:]
+        else:
+            print("usage: kd-render-report [--user <user>] [--require-gpu]", file=sys.stderr)
+            return 2
+    if user is None:
+        try:
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except KeyError:
+            user = str(os.getuid())
+
+    nodes = render_nodes(_listing())
+    openable = _can_open_as(user, nodes[0]) if nodes else None
+    holders = _session_holders(user)
+    held = held_nodes([h[2] for h in holders])
+
+    print(format_report(user, nodes, openable, held, holders))
+    v = verdict(nodes, openable, held)
+    if require and v != "IN-USE":
+        print("kd-render-report: --require-gpu but gpu=%s — the desktop is NOT demonstrably using "
+              "the GPU (B4/V15)" % v, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
