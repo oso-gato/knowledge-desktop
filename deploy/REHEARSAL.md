@@ -78,26 +78,41 @@ PASS. Copy its final summary block into the sign-off table (§5).
 Do these **per lineage**, with the deploy from §1 still running.
 
 ### 2a. Real pixels on all three paths → ONE shared session (A11) — the core clause
+0. **Set a machine-checkable marker first** (so "same session" is a colour match, not a judgement
+   call). Pick any token, then paint gw1's session with it:
+   ```sh
+   TOKEN=A11-$(date +%s)
+   podman exec -u gw1 kd-<lineage> kd-marker set "$TOKEN"   # prints the #RRGGBB it painted
+   kd-marker expect "$TOKEN"                                # the SAME colour, derived offline
+   ```
+   The colour is a deterministic, fully-saturated function of the token — no default desktop
+   background can be mistaken for it. **Every path's screen must now be that colour.**
 1. As **gw1**, open the **web door** (`https://<host>/` → guacamole → gw1's desktop tile), log in
-   (credential + the 2FA from §2b). Launch a visible marker — e.g. open a terminal and run
-   `echo A11-MARKER-$(date +%s)`; leave it on screen.
+   (credential + the 2FA from §2b). **Expected:** the desktop shows the marker colour. Also launch a
+   visible window marker — open a terminal and run `echo $TOKEN`; leave it on screen.
 2. From the **RDP client**, connect as gw1 (`<tailnet-host>:3390` for grd — gw1's uid-derived port;
    xrdp: `<tailnet-host>:3389`). **Expected:** you attach to the **same** live session — the marker
    terminal is **already there**, same windows, same screen. **A11 FAIL** if a fresh empty desktop
    appears (a second forked session).
 3. **xrdp only:** from the **VNC client**, connect as gw1 (`<tailnet-host>:5901`, password = the
    A13-derived form). **Expected:** same session again, marker still present.
-4. **MECHANICAL CHECK (do this while all paths are attached)** — the census oracle turns "same
-   session" from an eyeball judgement into a hard assertion:
+4. **MECHANICAL CHECKS (do these while all paths are attached)** — the two oracles turn "same
+   session" from an eyeball judgement into hard assertions. **Census** — how many sessions exist:
    ```sh
    podman exec kd-<lineage> kd-sessions --census gw1     # MUST print exactly 1
    podman exec kd-<lineage> kd-sessions                  # the full census, for the record
    ```
    **`1` = every path attached to the ONE session** (A11 holds). **`2`+ = a path FORKED a second
    session** — an A11 FAIL, and `kd-sessions --serving gw1` will exit 3 and name every offender.
-   Capture both outputs in the sign-off.
-5. **RECORD:** `A11 <lineage>: PASS` only if every path showed the *same* live session (visual)
-   **AND** the census read exactly `1` (mechanical).
+   **Marker** — whether the paths are looking at that *same painted screen*:
+   ```sh
+   podman exec -u gw1 kd-<lineage> kd-marker get    # MUST equal `kd-marker expect "$TOKEN"`
+   ```
+   A path that forked its own session would show a *default* background, not the marker colour.
+   Capture all outputs in the sign-off.
+5. **RECORD:** `A11 <lineage>: PASS` only if every path showed the *same* live session — census
+   exactly `1` **and** the marker colour on every path (mechanical), with the marker window
+   present (visual).
 
 ### 2b. Second-factor enrollment + login (A3/A5) — public door
 1. First web login as gw1 draws the **TOTP enrollment** challenge (no token yet). Scan the QR with
