@@ -87,7 +87,17 @@ Do these **per lineage**, with the deploy from §1 still running.
    appears (a second forked session).
 3. **xrdp only:** from the **VNC client**, connect as gw1 (`<tailnet-host>:5901`, password = the
    A13-derived form). **Expected:** same session again, marker still present.
-4. **RECORD:** `A11 <lineage>: PASS` only if every path showed the *same* live session.
+4. **MECHANICAL CHECK (do this while all paths are attached)** — the census oracle turns "same
+   session" from an eyeball judgement into a hard assertion:
+   ```sh
+   podman exec kd-<lineage> kd-sessions --census gw1     # MUST print exactly 1
+   podman exec kd-<lineage> kd-sessions                  # the full census, for the record
+   ```
+   **`1` = every path attached to the ONE session** (A11 holds). **`2`+ = a path FORKED a second
+   session** — an A11 FAIL, and `kd-sessions --serving gw1` will exit 3 and name every offender.
+   Capture both outputs in the sign-off.
+5. **RECORD:** `A11 <lineage>: PASS` only if every path showed the *same* live session (visual)
+   **AND** the census read exactly `1` (mechanical).
 
 ### 2b. Second-factor enrollment + login (A3/A5) — public door
 1. First web login as gw1 draws the **TOTP enrollment** challenge (no token yet). Scan the QR with
@@ -164,7 +174,7 @@ must scan from a vantage that is **not** the host:
 | baked-probe re-proof (C2/D2/D3/E1/web-auth) | ☐ | ☐ | rehearsal.sh |
 | on-host listener census (no rogue) | ☐ | ☐ | rehearsal.sh |
 | rollback drill | ☐ | ☐ | rehearsal.sh |
-| A11 one shared session, all 3 paths (2 on grd) | ☐ | ☐ | §2a manual |
+| A11 one shared session, all 3 paths (2 on grd) — visual **+ `kd-sessions --census` == 1** | ☐ | ☐ | §2a manual + oracle |
 | 2FA enrollment + mandatory login | ☐ | ☐ | §2b manual |
 | brute-force lockout | ☐ | ☐ | §2c manual |
 | cross-device resume (C2) | ☐ | ☐ | §2d manual |

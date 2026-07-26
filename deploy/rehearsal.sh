@@ -90,6 +90,16 @@ done
 xin /usr/libexec/kd/kd-isolation-check /home "$W1" "$W2" "$ADMIN" >/dev/null 2>&1 \
   && ok "D2/D3 kd-isolation-check ($W1/$W2 mutually private; $ADMIN no supervisory read)" \
   || no "D2/D3 kd-isolation-check — a home was readable across users (isolation broken)"
+# A11 BASELINE census (credential-free, so it runs unattended): exactly ONE prestarted session per
+# user BEFORE any door attaches. This is the baseline the MANUAL tri-path check (REHEARSAL.md §2a)
+# compares against — re-run `kd-sessions --census <user>` WITH all paths attached; it must still be 1.
+for u in "$ADMIN" "$W1" "$W2"; do
+  c="$(xin /usr/local/bin/kd-sessions --census "$u" 2>/dev/null || echo ERR)"
+  [ "$c" = 1 ] && ok "A11 baseline: $u has exactly 1 prestarted session" \
+                || no "A11 baseline: $u census=$c (expected 1 — 0 = no session prestarted, >1 = boot forked)"
+done
+echo "  --- session census (record this; re-check WITH all paths attached, §2a) ---"
+xin /usr/local/bin/kd-sessions 2>&1 | sed 's/^/    /'
 echo "  NOTE: web mandatory-2FA (A3), VNC login (A13) + secrets-scan (E1) are NOT run here"
 echo "        (they need REAL roster secrets on argv — an E1 leak); they are gate-proven (fixture)"
 echo "        and re-proven LIVE by the human login steps in REHEARSAL.md §2."

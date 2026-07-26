@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""kd-sessions (WP-12 ops oracle; A11) — the desktop-session CENSUS oracle, lineage-agnostically.
+
+The A11 observable (DESIGN §marker-a11 / V11: "session census == 1 throughout"): a user connecting
+over the web door, native RDP and native VNC must land on ONE shared session — no path may fork a
+second. This oracle makes that MECHANICALLY checkable instead of eyeball-only: connect by every
+path, then assert `kd-sessions --census <user>` == 1. It is the census half of the A11 proof; the
+marker half (every path's capture shows the same live screen) is kd-marker.
+
+  kd-sessions                   list every desktop session:  <user> <uid> <pid> <leader>
+  kd-sessions --census <user>   print ONLY the integer count of that user's desktop sessions
+                                (the A11 assertion: exactly 1 while any/all doors are attached)
+  kd-sessions --serving <user>  print `<uid> <pid> <leader>` of the session serving that user
+                                (rc 1 if the user has no session; rc 3 if MORE than one — an A11
+                                 violation is never silently reduced to "the first one")
+
+  exit 0 = answered; 1 = no such session; 2 = usage/enumeration error; 3 = ambiguous (>1 session)
+
+WHY PROCESS-OWNERSHIP, NOT `xrdp-sesadmin` (a zero-base correction to the DESIGN §17 sketch, which
+named a "sesadmin wrapper"): `xrdp-sesadmin` authenticates via `-u=<user> -p=<password>` — it would
+put a ROSTER SECRET ON ARGV, precisely the leak the merged E1 probe (kd-secrets-scan) scans every
+process cmdline for. A credential-free oracle is both safer and stronger, so the census is derived
+from the session LEADER PROCESS and its owning uid, which needs no authentication at all.
+
+MATCHING DISCIPLINE: leaders are matched on the process's COMM (the executable name), NEVER on a
+substring of the full argv. An args-substring match self-matches this very oracle (and any wrapper
+that mentions a leader's name) and would inflate the census — the classic pattern-self-match trap.
+
+  LINEAGE 1 (grd/Wayland): the per-user headless compositor `gnome-shell` IS the session.
+  LINEAGE 2 (xrdp/X11):    sesman spawns one `Xorg` per session; a forked second session is a
+                           second Xorg on a new display. (`xfce4-session` is the desktop INSIDE
+                           that session, so it is a fallback leader, not the primary count.)
+
+The parser is PURE and unit-tested in-box (shared/tests/kd-sessions.test.sh); the live enumeration
+is host-gate/COJOIN tier (a real session needs a real door attachment).
+"""
+import os
+import subprocess
+import sys
+
+# Session-leader executables, most-authoritative first, per lineage. Matched against COMM exactly.
+LEADERS_WAYLAND = ("gnome-shell",)
+LEADERS_X11 = ("Xorg",)
+# Fallback leaders: used ONLY when no primary leader is present at all (e.g. an X11 session whose
+# Xorg is named differently by a rebuild). Counted the same way, never ADDED to a primary count —
+# adding them would double-count one session (Xorg AND xfce4-session both belong to ONE session).
+FALLBACK_X11 = ("xfce4-session",)
+FALLBACK_WAYLAND = ("gnome-session-binary",)
+
+
+# ------------------------------------------------------------------ pure parser (unit-tested)
+def parse_sessions(ps_out, leaders):
+    """From `ps -eo user:32,uid,pid,comm` stdout return [(user, uid, pid, comm)] for every process
+    whose COMM is exactly one of `leaders`.
+
+    The header line and malformed/short lines are skipped. COMM is compared EXACTLY (never a
+    substring): a process merely *mentioning* a leader's name in its arguments is not a session —
+    that self-match is what would make this oracle count itself.
+    """
+    out = []
+    for line in ps_out.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        user, uid, pid, comm = parts[0], parts[1], parts[2], parts[3]
+        if user == "USER" or not uid.isdigit() or not pid.isdigit():
+            continue                      # header, or not a process row
+        if comm in leaders:
+            out.append((user, int(uid), int(pid), comm))
+    return out
+
+
+def census(sessions, user):
+    """Count the sessions belonging to `user` (matched on the user column)."""
+    return len([s for s in sessions if s[0] == user])
+
+
+def sessions_for(sessions, user):
+    return [s for s in sessions if s[0] == user]
+
+
+# ------------------------------------------------------------------ live enumeration (host-gate)
+def _ps():
+    """`ps -eo user:32,uid,pid,comm` — a wide user field so long usernames are not truncated."""
+    r = subprocess.run(["ps", "-eo", "user:32,uid,pid,comm"], text=True, capture_output=True)
+    if r.returncode != 0:
+        sys.exit("kd-sessions: ps failed: %s" % (r.stderr.strip() or r.returncode))
+    return r.stdout
+
+
+def _leaders_for_this_box():
+    """Pick the lineage's leader set. Wayland (L1/grd) vs X11 (L2/xrdp) — detected the same way as
+    kd-geometry. Falls back only when the primary set finds nothing at all."""
+    wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or os.environ.get("XDG_SESSION_TYPE") == "wayland"
+    # The oracle usually runs OUTSIDE any user session (from the gate PROBE / rehearsal, as root),
+    # where neither var is set — so also treat a present gnome-shell as the Wayland signal.
+    return (LEADERS_WAYLAND, FALLBACK_WAYLAND) if wayland else (LEADERS_X11, FALLBACK_X11)
+
+
+def enumerate_sessions():
+    ps_out = _ps()
+    primary, fallback = _leaders_for_this_box()
+    found = parse_sessions(ps_out, primary)
+    if not found:
+        # Neither lineage-detection nor the primary leader found anything: try BOTH lineages'
+        # primaries (the oracle may run from a rootless context with no session env), then the
+        # fallbacks. Never mixes a fallback INTO a primary count.
+        found = parse_sessions(ps_out, LEADERS_WAYLAND + LEADERS_X11)
+    if not found:
+        found = parse_sessions(ps_out, fallback)
+    return found
+
+
+def main():
+    a = sys.argv[1:]
+    if a and a[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if not a:
+        for user, uid, pid, comm in sorted(enumerate_sessions()):
+            print("%s %d %d %s" % (user, uid, pid, comm))
+        return 0
+    if len(a) != 2 or a[0] not in ("--census", "--serving"):
+        print("usage: kd-sessions [--census <user> | --serving <user>]", file=sys.stderr)
+        return 2
+    mode, user = a[0], a[1]
+    mine = sessions_for(enumerate_sessions(), user)
+    if mode == "--census":
+        print(len(mine))                 # 0 is a legitimate answer, not an error — A11 asserts ==1
+        return 0
+    if not mine:
+        print("kd-sessions: no desktop session for user %s" % user, file=sys.stderr)
+        return 1
+    if len(mine) > 1:
+        print("kd-sessions: A11 VIOLATION — %s has %d desktop sessions (a path forked a second):"
+              % (user, len(mine)), file=sys.stderr)
+        for _u, uid, pid, comm in sorted(mine):
+            print("    uid=%d pid=%d leader=%s" % (uid, pid, comm), file=sys.stderr)
+        return 3
+    _u, uid, pid, comm = mine[0]
+    print("%d %d %s" % (uid, pid, comm))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
