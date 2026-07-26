@@ -214,10 +214,12 @@ COPY shared/kd-geometry             /usr/local/bin/kd-geometry
 COPY shared/kd-sessions             /usr/local/bin/kd-sessions
 # WP-12 (A11): the kd-marker oracle (Wayland path — GNOME background GSettings via Gio/python3-gi)
 COPY shared/kd-marker               /usr/local/bin/kd-marker
+# WP-12 (B4/V15): the kd-render-report oracle (render-node evidence; /proc only, no new dep)
+COPY shared/kd-render-report        /usr/local/bin/kd-render-report
 RUN chmod 0755 /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/local/bin/kd-health \
         /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run /usr/local/bin/kd-ingest \
-        /usr/local/bin/kd-sessions /usr/local/bin/kd-marker \
+        /usr/local/bin/kd-sessions /usr/local/bin/kd-marker /usr/local/bin/kd-render-report \
         /usr/libexec/kd/kd-rdp-check \
         /usr/libexec/kd/geometry-governor /usr/local/bin/kd-geometry \
         /usr/libexec/kd/kd-isolation-check \
