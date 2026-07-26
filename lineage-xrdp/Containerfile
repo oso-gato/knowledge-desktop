@@ -160,7 +160,9 @@ COPY shared/kd-ingest               /usr/local/bin/kd-ingest
 COPY shared/ingest-sandbox/         /usr/local/share/kd-ingest-sandbox/
 # WP-12 (C4): the kd-geometry oracle (X11 path — reads Screen 0 current via xrandr)
 COPY shared/kd-geometry             /usr/local/bin/kd-geometry
-RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health /usr/local/bin/kd-ingest /usr/local/bin/kd-geometry \
+# WP-12 (A11): the kd-sessions census oracle (X11 path — one Xorg per xrdp session; procps-ng `ps`)
+COPY shared/kd-sessions             /usr/local/bin/kd-sessions
+RUN chmod 0755 /usr/local/bin/kd-entrypoint /usr/local/bin/kd-health /usr/local/bin/kd-ingest /usr/local/bin/kd-geometry /usr/local/bin/kd-sessions \
         /usr/libexec/kd/kd-provision /usr/libexec/kd/kd-agent-env /usr/libexec/kd/kd-agent-run /usr/libexec/kd/kd-cred \
         /usr/libexec/kd/kd-session-enable /usr/libexec/kd/startwm-kd \
         /usr/libexec/kd/doors-agent /usr/libexec/kd/kd-vnc-login /usr/libexec/kd/kd-vnc-check /usr/libexec/kd/kd-rdp-check \
