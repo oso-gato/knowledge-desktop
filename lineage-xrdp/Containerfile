@@ -81,8 +81,8 @@ RUN chmod 0755 /usr/local/libexec/kd-vendor-repos.sh && /usr/local/libexec/kd-ve
     && rm -f /usr/local/libexec/kd-vendor-repos.sh
 
 # Obsidian (class-c): the URL + sha256 are the pin; a hash mismatch FAILS the build (fail-closed).
-ARG OBSIDIAN_VERSION=1.12.7
-ARG OBSIDIAN_SHA256=fcbe08b111d9c1fdb09b9c08952b06e1c829c62163eba2584c4b4ec859be079d
+ARG OBSIDIAN_VERSION=1.14.4
+ARG OBSIDIAN_SHA256=e70b7cd63787e7f798a84fec453f5c446b91877bd3f612e8fb98e9b76cc81120
 ADD https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/obsidian-${OBSIDIAN_VERSION}.tar.gz /tmp/obsidian.tar.gz
 RUN set -eo pipefail \
     && echo "${OBSIDIAN_SHA256}  /tmp/obsidian.tar.gz" | sha256sum -c - \
